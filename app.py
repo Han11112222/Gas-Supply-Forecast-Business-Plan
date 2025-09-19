@@ -39,13 +39,13 @@ st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide
 DEFAULT_XLSX = "사업계획최종.xlsx"  # 레포 안 기본 파일
 DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
 # 열 이름 → (구분, 세부)
-# (엑셀에 존재하는 이름만 사용)
 COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     # 가정용
     "취사용": ("가정용", "취사용"),
     "개별난방": ("가정용", "개별난방"),
     "중앙난방": ("가정용", "중앙난방"),
     "가정용소계": ("가정용", "소계"),
+    "가정용소계(합계)": ("가정용", "소계"),
     "가정용 소계": ("가정용", "소계"),
     "소계(가정용)": ("가정용", "소계"),
     # 영업/업무/산업 등
@@ -56,7 +56,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "냉난방": ("업무용", "냉난방용"),
     "냉난방용": ("업무용", "냉난방용"),
     "주한미군": ("업무용", "주한미군"),
-    "소계": ("업무용", "소계"),  # (시트 구조상 소계가 2번 있을 수 있어도 문제 없음)
+    "소계": ("업무용", "소계"),  # (중복 허용)
     "산업용": ("산업용", "합계"),
     # 기타 에너지
     "열병합": ("열병합", "합계"),
@@ -189,7 +189,7 @@ def make_pivot(long_df: pd.DataFrame, year: int) -> pd.DataFrame:
     pv.columns.name = ""
     pv["합계"] = pv.sum(axis=1)
 
-    # 보기 순서: 구분 고정(가정용→영업용→업무용→산업용→열병합→연료전지→자가열전용→열전용설비용→CNG→수송용→합계)
+    # 보기 순서
     group_order = [
         "가정용",
         "영업용",
@@ -203,7 +203,6 @@ def make_pivot(long_df: pd.DataFrame, year: int) -> pd.DataFrame:
         "수송용",
         "합계",
     ]
-    # 정렬
     pv = pv.sort_index(level=[0, 1])
     pv = pv.reindex(
         pd.MultiIndex.from_tuples(
@@ -282,8 +281,6 @@ for sn, tab in zip(SCENARIOS, scenario):
         st.subheader(f"시나리오: {sn}")
 
         # 시나리오에 해당하는 시트 찾기
-        # - "데이터" 탭은 기본적으로 "데이터" 시트를 우선 사용
-        # - 없다면 시나리오명과 동일한 시트 시도
         cand = [sn, "데이터"] if sn == "데이터" else [sn]
         sheet_name = None
         for s in cand:
@@ -310,14 +307,21 @@ for sn, tab in zip(SCENARIOS, scenario):
         st.markdown("---")
         st.subheader("월별 추이 그래프")
 
-        # 연도 선택(다중) + 그룹 선택
+        # 연도 선택(다중) + 그룹 선택 + 합계 포함 토글(NEW)
         sel_years = st.multiselect("연도 선택(그래프)", YEARS, default=YEARS, key=f"yrs_{sn}")
         group_options = ["전체", "가정용", "영업용", "업무용", "산업용", "열병합", "연료전지", "자가열전용", "열전용설비용", "CNG", "수송용"]
         sel_group = st.segmented_control("그룹", group_options, selection_mode="single", default="전체", key=f"grp_{sn}")
+        include_sum = st.toggle("합계 포함", value=False, key=f"sum_{sn}")  # ← 추가된 버튼
 
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
+
+        # 그룹 필터
         if sel_group != "전체":
             plot_base = plot_base[plot_base["구분"] == sel_group]
+
+        # 합계 포함 여부 필터(NEW)
+        if not include_sum:
+            plot_base = plot_base[plot_base["구분"] != "합계"]
 
         if plot_base.empty:
             st.info("선택 조건에 해당하는 데이터가 없습니다.")
