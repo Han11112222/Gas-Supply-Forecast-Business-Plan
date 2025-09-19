@@ -1,8 +1,10 @@
-# app.py — 3-2 공급량상세 (엑셀 표 구조 그대로 + 자동 정규화 + 그래프)
-# - 사이드바: 데이터 소스 선택 → 레포 파일/업로드 → 시트 선택
-# - 캐시 직렬화 이슈 해결: 캐시는 bytes/DataFrame만 사용
+# app.py — 공급량 실적 및 계획 상세
+# - 엑셀처럼 보이는 표(구분/세부 × 1~12월 + 합계)를 화면에 구성
+# - 표는 편집 가능(st.data_editor); 합계/소계/전체합계 자동계산
+# - 위쪽 버튼: [전체] + 각 용도(구분)별 토글 → 아래 동적 그래프 갱신
+# - 선택: CSV 업로드/다운로드
 
-import os, io, re, hashlib
+import io
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -10,7 +12,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import streamlit as st
 
-# -------------------- 폰트 --------------------
+# ---------- 한글 폰트 ----------
 def set_korean_font():
     try:
         mpl.rcParams["font.family"] = "NanumGothic"
@@ -19,288 +21,195 @@ def set_korean_font():
         pass
 set_korean_font()
 
-st.set_page_config(page_title="3-2 공급량상세 대시보드", layout="wide")
-st.title("📊 3-2 공급량상세 대시보드")
-st.caption("엑셀 표 형태 그대로 표시 → 월/블록 자동 인식 → 정규화·요약·그래프")
+st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide")
+st.title("📊 공급량 실적 및 계획 상세")
 
-# -------------------- 캐시 가능한 유틸 --------------------
-@st.cache_data(show_spinner=False)
-def file_bytes_digest(b: bytes) -> str:
-    return hashlib.md5(b).hexdigest()
+# ---------- 기본 구조(행 템플릿) ----------
+# 필요하면 여기서 기본 행을 더 넣거나 이름을 바꿔도 된다.
+DEFAULT_ROWS = [
+    # 구분, 세부
+    ("가정용", "취사용"),
+    ("가정용", "개별난방"),
+    ("가정용", "중앙난방"),
+    ("가정용", "소계"),
+    ("영업용", "일반용1"),
+    ("영업용", "소계"),
+    ("업무용", "일반용2"),
+    ("업무용", "냉난방용"),
+    ("업무용", "주택미급"),   # 필요 시 변경
+    ("업무용", "소계"),
+    ("산업용", "합계"),        # 산업용은 단일행이면 '합계'로 두면 편함
+    ("열병합", "합계"),
+    ("연료전지", "합계"),
+    ("자가열병합", "합계"),
+    ("열전용설비용", "합계"),
+    ("CNG", "합계"),
+    ("수송용", "BIO"),        # 예시
+    ("수송용", "소계"),
+    ("합계", ""),             # 맨 아래 전체 합계(자동계산 전용)
+]
 
-@st.cache_data(show_spinner=True)
-def read_file_bytes(path_str: str) -> bytes:
-    """레포 파일을 bytes로 읽어 캐시에 저장"""
-    return Path(path_str).read_bytes()
+MONTH_COLS = [f"{m}월" for m in range(1, 13)]
+ALL_COLS = ["구분", "세부"] + MONTH_COLS + ["합계"]
 
-@st.cache_data(show_spinner=True)
-def parse_sheet_from_bytes(excel_bytes: bytes, sheet_name: str, header_rows: int, skiprows: int) -> pd.DataFrame:
-    """엑셀 bytes → ExcelFile → 지정 시트 DataFrame 반환(직렬화 가능)"""
-    import openpyxl  # engine
-    xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
-    hdr = list(range(header_rows)) if header_rows > 1 else 0
-    df = xls.parse(sheet_name, header=hdr, skiprows=skiprows)
+# ---------- 사이드바: 데이터 불러오기 ----------
+sb = st.sidebar
+sb.header("데이터 불러오기")
+
+mode = sb.radio("방식", ["빈 표로 시작", "CSV 업로드"], index=0, horizontal=True)
+if mode == "CSV 업로드":
+    up = sb.file_uploader("CSV 업로드(구분,세부,1월~12월 형식)", type=["csv"])
+else:
+    up = None
+
+def blank_df():
+    df = pd.DataFrame(DEFAULT_ROWS, columns=["구분", "세부"])
+    for c in MONTH_COLS:
+        df[c] = np.nan
+    df["합계"] = np.nan
     return df
 
-# -------------------- 파싱/정규화 유틸 --------------------
-def join_levels(t):
-    parts = [str(x) for x in t if pd.notna(x)]
-    parts = [p for p in parts if not str(p).lower().startswith("unnamed")]
-    return " / ".join(parts) if parts else ""
+if up:
+    raw = pd.read_csv(io.BytesIO(up.getvalue()))
+    # 컬럼 보정: 1~12 숫자만 있으면 "월" 붙이기
+    rename_map = {}
+    for c in raw.columns:
+        if str(c).isdigit() and 1 <= int(c) <= 12:
+            rename_map[c] = f"{int(c)}월"
+    raw = raw.rename(columns=rename_map)
+    # 누락 컬럼 보정
+    for c in ["구분", "세부"] + MONTH_COLS:
+        if c not in raw.columns:
+            raw[c] = np.nan
+    df0 = raw[["구분", "세부"] + MONTH_COLS].copy()
+else:
+    df0 = blank_df()
 
-def detect_month_cols(df: pd.DataFrame):
-    month_re = re.compile(r"^(\d{1,2})(?:월)?$")
-    blocks = {}
-    for col in df.columns:
-        labels = list(col) if isinstance(col, tuple) else [str(col)]
-        last = str(labels[-1]).replace(" ", "").replace("\n", "").replace(".0", "")
-        m = month_re.match(last)
-        if m:
-            block_label = join_levels(labels[:-1]).strip()
-            if not block_label:
-                block_label = join_levels(labels)
-            blocks.setdefault(block_label, []).append(col)
+st.caption("아래 표는 직접 수정/붙여넣기가 가능하다. 소계/합계는 자동 계산된다.")
 
-    def month_key(c):
-        last = c[-1] if isinstance(c, tuple) else c
-        s = str(last).replace("월", "")
-        try:
-            return int(float(s))
-        except:
-            return 99
+# ---------- 편집 가능한 표 ----------
+config = {
+    "구분": st.column_config.TextColumn("구분", width="small"),
+    "세부": st.column_config.TextColumn("세부", width="medium"),
+}
+for c in MONTH_COLS:
+    config[c] = st.column_config.NumberColumn(c, min_value=0, step=1, width="small", help="㎥")
 
-    for k in list(blocks.keys()):
-        blocks[k] = sorted(blocks[k], key=month_key)
-    return blocks
+edited = st.data_editor(
+    df0,
+    num_rows="dynamic",            # 행 추가 가능
+    column_config=config,
+    hide_index=True,
+    use_container_width=True,
+    key="data_editor_main",
+)
 
-def extract_year_scenario(text: str):
-    y = None
-    m = re.search(r"(20\d{2})", text)
-    if m:
-        y = int(m.group(1))
-    scn = "계획"
-    if "실적" in text:
-        scn = "실적"
-    elif re.search(r"best", text, re.I):
-        scn = "Best"
-    elif re.search(r"conservative", text, re.I):
-        scn = "Conservative"
-    elif re.search(r"normal", text, re.I):
-        scn = "Normal"
-    elif "계획" in text:
-        scn = "계획"
-    return y, scn
+# ---------- 계산 로직: 소계/합계 ----------
+df = edited.copy()
 
-def tidy_from_excel_table(df: pd.DataFrame, hierarchy_cols, month_blocks):
-    hdf = df.copy()
-    for c in hierarchy_cols:
-        if c in hdf.columns:
-            hdf[c] = hdf[c].ffill()
+# 타입 정리(숫자)
+for c in MONTH_COLS:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    out = []
-    for block, cols in month_blocks.items():
-        y, scn = extract_year_scenario(block)
-        id_vars = [c for c in hierarchy_cols if c in hdf.columns]
-        sub = hdf[id_vars + cols].copy()
-        msub = sub.melt(id_vars=id_vars, value_vars=cols, var_name="월열", value_name="공급량(㎥)")
+# 각 행 합계
+df["합계"] = df[MONTH_COLS].sum(axis=1, min_count=1)
 
-        def month_from_col(col):
-            name = col[-1] if isinstance(col, tuple) else col
-            s = str(name).replace("월", "").strip()
-            try:
-                return int(float(s))
-            except:
-                return None
+# 그룹별 소계 자동계산: 세부 == '소계' 인 행에 같은 '구분'의 일반행을 합산
+def apply_subtotals(d):
+    if "소계" in d["세부"].values:
+        mask_detail = d["세부"].ne("소계") & d["세부"].ne("합계")
+        sums = d.loc[mask_detail, MONTH_COLS].sum(numeric_only=True)
+        d.loc[d["세부"] == "소계", MONTH_COLS] = sums.values
+        d.loc[d["세부"] == "소계", "합계"] = sums.sum()
+    return d
 
-        msub["월"] = msub["월열"].map(month_from_col).astype("Int64")
-        msub.drop(columns=["월열"], inplace=True)
-        msub["연도"] = y
-        msub["시나리오"] = scn
-        msub["용도"] = msub[id_vars[0]].astype(str) if len(id_vars) >= 1 else "미지정"
-        msub["세부용도"] = msub[id_vars[-1]].astype(str) if len(id_vars) >= 2 else "합계"
-        out.append(msub)
+df = df.groupby("구분", group_keys=False).apply(apply_subtotals)
 
-    tidy = pd.concat(out, ignore_index=True)
-    tidy["공급량(㎥)"] = pd.to_numeric(tidy["공급량(㎥)"], errors="coerce")
-    tidy = tidy.dropna(subset=["월", "공급량(㎥)"])
-    for c in ["용도", "세부용도", "시나리오"]:
-        tidy[c] = tidy[c].astype(str).str.strip()
-    return tidy
+# 맨 아래 전체 합계 행 자동계산(구분=='합계' 한 행이 있다고 가정)
+if (df["구분"] == "합계").any():
+    overall_mask = df["구분"].ne("합계") & df["세부"].ne("소계") & df["세부"].ne("합계")
+    overall = df.loc[overall_mask, MONTH_COLS].sum(numeric_only=True)
+    df.loc[df["구분"] == "합계", MONTH_COLS] = overall.values
+    df.loc[df["구분"] == "합계", "합계"] = overall.sum()
 
-def fig_monthly_lines(df: pd.DataFrame, selected_usage: str, hue: str = "연도/시나리오"):
-    fig, ax = plt.subplots(figsize=(9,4))
-    for key, sub in df.groupby(hue):
-        sub = sub.sort_values("월")
-        ax.plot(sub["월"], sub["공급량(㎥)"], marker="o", label=str(key))
-    ax.set_xlabel("월"); ax.set_ylabel("공급량(㎥)")
-    ax.set_title(f"[{selected_usage}] 월별 추이")
-    ax.legend(loc="best", ncol=2, fontsize=9); ax.grid(True, alpha=0.3)
-    return fig
+# ---------- 표시용 스타일 ----------
+view = df.copy()
 
-def fig_yearly_stacked(df: pd.DataFrame):
-    pivot = df.pivot_table(index="연도/시나리오", columns="용도", values="공급량(㎥)", aggfunc="sum").fillna(0.0)
-    fig, ax = plt.subplots(figsize=(9,4))
-    bottom = np.zeros(len(pivot)); x = np.arange(len(pivot))
-    for col in pivot.columns:
-        ax.bar(x, pivot[col].values, bottom=bottom, label=str(col))
-        bottom += pivot[col].values
-    ax.set_xticks(x, pivot.index.tolist(), rotation=15, ha="right")
-    ax.set_ylabel("연간 합계(㎥)"); ax.set_title("연도/시나리오별 용도 스택 합계")
-    ax.legend(ncol=3, fontsize=9); ax.grid(True, axis="y", alpha=0.3)
-    return fig, pivot
+# 보기 좋게: 소계/합계 행 강조
+def styler(sdf: pd.DataFrame):
+    sty = sdf.style
+    # 헤더줄 배경
+    sty = sty.set_table_styles([
+        {"selector": "th.col_heading", "props": "background:#f6f6f6;"},
+        {"selector": "thead th", "props": "text-align:center;"},
+        {"selector": "tbody td", "props": "text-align:right;"},
+    ])
+    # 좌측 텍스트 정렬
+    sty = sty.set_properties(subset=["구분","세부"], **{"text-align":"left"})
+    # 소계 행
+    mask_sub = sdf["세부"].eq("소계")
+    sty = sty.apply(lambda r: ["background-color:#eef5ff" if m else "" for m in mask_sub], axis=1)
+    # 전체 합계 행
+    mask_tot = sdf["구분"].eq("합계")
+    sty = sty.apply(lambda r: ["background-color:#fdebd3" if m else "" for m in mask_tot], axis=1)
+    # 숫자 포맷
+    sty = sty.format({c: "{:,.0f}".format for c in MONTH_COLS + ["합계"]})
+    return sty
 
-# -------------------- 사이드바: 데이터 불러오기 --------------------
-sb = st.sidebar
-sb.title("🔌 데이터 불러오기")
+st.subheader("3-2. 공급량 실적 및 계획 상세 (표)")
+st.dataframe(styler(view), use_container_width=True)
 
-repo_dir = Path(__file__).parent
-repo_xlsx = sorted(repo_dir.glob("*.xlsx"))
-repo_csv  = sorted(repo_dir.glob("*.csv"))
-has_repo_files = len(repo_xlsx) + len(repo_csv) > 0
+# ---------- 버튼(전체/용도별) & 동적 그래프 ----------
+st.subheader("월별 추이 그래프")
 
-source_options = []
-if has_repo_files:
-    source_options.append("레포에 있는 파일 사용")
-source_options += ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"]
-src = sb.radio("데이터 소스 선택", source_options, index=0)
+# 용도(구분) 목록
+usage_list = [u for u in view["구분"].dropna().unique().tolist() if u and u != "합계"]
+usage_list_sorted = sorted(usage_list, key=lambda x: usage_list.index(x))  # 원래 순서 유지 느낌
 
-excel_bytes = None
-csv_df = None
-sheet_name = None
+# 버튼 UI (Streamlit 1.38의 segmented_control 사용)
+selected = st.segmented_control("보기 선택", options=["전체"] + usage_list_sorted, default="전체")
 
-if src == "레포에 있는 파일 사용":
-    files = [(p.name, str(p)) for p in repo_xlsx] + [(p.name, str(p)) for p in repo_csv]
-    idx = sb.selectbox("📁 레포 파일", options=list(range(len(files))), format_func=lambda i: files[i][0])
-    fname, fpath = files[idx]
-    if fname.lower().endswith(".xlsx"):
-        excel_bytes = read_file_bytes(fpath)  # bytes 캐시에 저장 OK
-        # 시트 목록 얻기 위해 임시 ExcelFile
-        import openpyxl
-        xls_tmp = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
-        sheet_name = sb.selectbox(
-            "🗂 시트",
-            options=xls_tmp.sheet_names,
-            index=(xls_tmp.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in xls_tmp.sheet_names else 0),
-        )
+def monthly_series_for(selection: str):
+    if selection == "전체":
+        mask = view["구분"].ne("합계") & view["세부"].ne("소계") & view["세부"].ne("합계")
     else:
-        csv_df = pd.read_csv(fpath)
+        mask = (view["구분"] == selection) & view["세부"].ne("소계") & view["세부"].ne("합계")
+    monthly = view.loc[mask, MONTH_COLS].sum(numeric_only=True)
+    # x: 1..12, y: values
+    xs = list(range(1, 13))
+    ys = [float(monthly.get(f"{m}월", 0.0)) for m in xs]
+    return xs, ys
 
-elif src == "엑셀 업로드(.xlsx)":
-    up = sb.file_uploader("엑셀 파일 업로드", type=["xlsx"])
-    if up:
-        excel_bytes = up.getvalue()
-        import openpyxl
-        xls_tmp = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
-        sheet_name = sb.selectbox(
-            "🗂 시트",
-            options=xls_tmp.sheet_names,
-            index=(xls_tmp.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in xls_tmp.sheet_names else 0),
-        )
+xs, ys = monthly_series_for(selected)
 
-else:  # CSV 업로드
-    upc = sb.file_uploader("CSV 업로드", type=["csv"])
-    if upc:
-        csv_df = pd.read_csv(io.BytesIO(upc.getvalue()))
+# matplotlib 라인 차트(지침: 색상 지정 금지)
+fig, ax = plt.subplots(figsize=(10,4))
+ax.plot(xs, ys, marker="o")
+ax.set_xticks(xs)
+ax.set_xlabel("월")
+ax.set_ylabel("공급량(㎥)")
+ax.set_title(f"{selected} 월별 합계 추이")
+ax.grid(True, alpha=0.3)
+st.pyplot(fig, use_container_width=True)
 
-if excel_bytes is None and csv_df is None:
-    st.info("좌측에서 **데이터 소스 선택 → 파일/시트**를 지정하세요.")
-    st.stop()
-
-# -------------------- 엑셀 표 파싱 옵션 --------------------
-if excel_bytes is not None:
-    sb.markdown("---")
-    sb.subheader("⚙️ 엑셀 표 파싱 옵션")
-    header_rows = sb.number_input("헤더 행 수(병합 제목 포함)", min_value=1, max_value=4, value=2, step=1)
-    skiprows = sb.number_input("헤더 시작 전 건너뛸 행 수", min_value=0, max_value=50, value=0, step=1)
-
-    excel_view = parse_sheet_from_bytes(excel_bytes, sheet_name, int(header_rows), int(skiprows))
-    st.subheader("엑셀 표(그대로 보기)")
-    st.dataframe(excel_view, use_container_width=True)
-
-    # 계층 후보 자동 추천
-    default_hierarchy = []
-    for c in excel_view.columns[:5]:
-        if (isinstance(c, tuple) and any(pd.notna(x) for x in c) and not str(c[-1]).strip().endswith("월")) or (isinstance(c, str) and "월" not in c):
-            default_hierarchy.append(c)
-
-    sb.subheader("🧭 매핑(왼쪽 구분/계층 열, 월 열 자동감지)")
-    hierarchy_cols = sb.multiselect(
-        "계층(구분) 열 선택(상위→하위, 1~3개 추천)",
-        options=list(excel_view.columns),
-        default=default_hierarchy
+# ---------- 다운로드 ----------
+st.subheader("다운로드")
+c1, c2 = st.columns(2)
+with c1:
+    st.download_button(
+        "현재 표 CSV 다운로드",
+        data=view[ALL_COLS].to_csv(index=False).encode("utf-8-sig"),
+        file_name="supply_table.csv",
+        mime="text/csv",
+    )
+with c2:
+    # 그래프용 월별 시계열 CSV (선택 대상 기준)
+    ts_df = pd.DataFrame({"월": xs, "공급량(㎥)": ys})
+    st.download_button(
+        "현재 그래프 데이터 CSV 다운로드",
+        data=ts_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"supply_timeseries_{selected}.csv",
+        mime="text/csv",
     )
 
-    month_blocks = detect_month_cols(excel_view)
-    if not month_blocks:
-        st.warning("월(1~12/1월~12월) 열을 찾지 못했습니다. 헤더 행 수/건너뛸 행을 조정하세요.")
-        st.stop()
-
-    # 정규화
-    tidy = tidy_from_excel_table(excel_view, hierarchy_cols=hierarchy_cols, month_blocks=month_blocks)
-
-else:
-    # CSV 경로: 이미 롱형식이라고 가정
-    st.subheader("CSV 미리보기")
-    st.dataframe(csv_df.head(30), use_container_width=True)
-    tidy = csv_df.rename(columns={"값": "공급량(㎥)"})
-    if "공급량(㎥)" not in tidy.columns:
-        st.stop()
-
-# -------------------- 정규화 결과 --------------------
-if tidy.empty:
-    st.warning("정규화 결과가 비어 있습니다. 파싱 옵션을 조정하세요.")
-    st.stop()
-
-tidy["연도/시나리오"] = tidy["연도"].astype("Int64").astype(str) + "·" + tidy["시나리오"].astype(str)
-
-st.subheader("정규화 데이터(표준형)")
-st.dataframe(tidy.head(50), use_container_width=True)
-
-# -------------------- 필터 --------------------
-st.subheader("필터")
-f1, f2, f3 = st.columns(3)
-with f1:
-    years = sorted(tidy["연도"].dropna().unique().tolist())
-    sel_years = st.multiselect("연도", years, default=years)
-with f2:
-    scns = tidy["시나리오"].dropna().unique().tolist()
-    order = ["실적","Normal","Best","Conservative","계획"]
-    ordered = [s for s in order if s in scns] + [s for s in scns if s not in order]
-    sel_scns = st.multiselect("시나리오/계획", ordered, default=ordered)
-with f3:
-    uses = tidy["용도"].dropna().unique().tolist()
-    sel_use = st.selectbox("용도 선택(그래프 기준)", ["전체"] + uses, index=0)
-
-view = tidy.query("연도 in @sel_years and 시나리오 in @sel_scns").copy()
-
-# -------------------- 출력 --------------------
-yearly = (view.groupby(["연도/시나리오","용도"], as_index=False)["공급량(㎥)"]
-          .sum()
-          .sort_values(["연도/시나리오","용도"]))
-st.subheader("연도/시나리오 × 용도 연간 합계(㎥)")
-st.dataframe(yearly, use_container_width=True)
-
-fig1, pivot1 = fig_yearly_stacked(view)
-st.pyplot(fig1, use_container_width=True)
-
-if sel_use == "전체":
-    plot_df = (view.groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
-    fig2 = fig_monthly_lines(plot_df, "전체(용도 합계)")
-else:
-    plot_df = (view.query("용도 == @sel_use")
-               .groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
-    fig2 = fig_monthly_lines(plot_df, sel_use)
-st.pyplot(fig2, use_container_width=True)
-
-# -------------------- 다운로드 --------------------
-st.subheader("다운로드")
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.download_button("정규화 데이터 CSV", data=tidy.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="normalized_3-2_supply.csv", mime="text/csv")
-with c2:
-    st.download_button("연간합계 피벗 CSV", data=pivot1.reset_index().to_csv(index=False).encode("utf-8-sig"),
-                       file_name="yearly_usage_pivot.csv", mime="text/csv")
-with c3:
-    st.download_button("현재 뷰 CSV", data=view.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="current_view.csv", mime="text/csv")
+st.caption("Tip: 표에서 값을 붙여넣기하면 합계/소계/그래프가 즉시 갱신된다. CSV로 저장해두면 다음에 업로드해서 이어서 편집 가능.")
