@@ -154,24 +154,33 @@ def fig_yearly_stacked(df: pd.DataFrame):
     ax.grid(True, axis="y", alpha=0.3)
     return fig, pivot
 
-# ───────── 파일 입력 ─────────
+# ───────── 파일 입력 (샘플 제거, 업로드만) ─────────
 left, right = st.columns([1,2])
 with left:
-    src = st.radio("데이터 소스 선택", ["샘플 사용(CSV)", "엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"], horizontal=False)
+    src = st.radio("데이터 소스 선택", ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"], horizontal=False)
 
-    if src == "엑셀 업로드(.xlsx)":
-        up = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
-        sheets = {}
-        if up:
-            _ = file_bytes_digest(up.getvalue())
-            sheets = load_excel(up.getvalue())
-        sheet_name = st.selectbox("시트 선택", options=list(sheets.keys()) if sheets else [], index=(list(sheets.keys()).index("3-2 공급량상세") if "3-2 공급량상세" in sheets else 0) if sheets else 0)
-        raw = sheets[sheet_name] if sheets else None
+raw, sheet_name = None, None
 
-    elif src == "CSV 업로드(.csv)":
-        upc = st.file_uploader("CSV 업로드", type=["csv"])
-        raw = load_csv(upc.getvalue()) if upc else None
-        sheet_name = None
+if src == "엑셀 업로드(.xlsx)":
+    up = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
+    if up:
+        sheets = load_excel(up.getvalue())
+        sheet_name = st.selectbox(
+            "시트 선택",
+            options=list(sheets.keys()),
+            index=(list(sheets.keys()).index("3-2 공급량상세")
+                   if "3-2 공급량상세" in sheets else 0)
+        )
+        raw = sheets[sheet_name]
+
+elif src == "CSV 업로드(.csv)":
+    upc = st.file_uploader("CSV 업로드", type=["csv"])
+    if upc:
+        raw = load_csv(upc.getvalue())
+
+if raw is None:
+    st.info("파일을 업로드하면 미리보기가 나타납니다.")
+    st.stop()
 
     else:
         # 샘플 CSV 로드
