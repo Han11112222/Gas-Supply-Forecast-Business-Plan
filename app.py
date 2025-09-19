@@ -1,4 +1,5 @@
-# app.py — 공급량 실적 및 계획 상세 (None 제거 + 동적 그래프 + 연도별 탭)
+# app.py — 공급량 실적 및 계획 상세 (데이터/best/conservative 동시 지원, 2024~2027, None 제거, 동적 그래프)
+
 import io, os, re, unicodedata
 import numpy as np
 import pandas as pd
@@ -9,12 +10,12 @@ import altair as alt
 
 DEFAULT_REPO_FILE = "사업계획최종.xlsx"
 
+# ─────────────────────────────────────────────────────────
+# 폰트
 def set_korean_font():
     import matplotlib.font_manager as fm
     candidates = [
         ("NanumGothic-Regular.ttf", "NanumGothic"),
-        ("fonts/NanumGothic-Regular.ttf", "NanumGothic"),
-        ("fonts/NanumGothic.ttf", "NanumGothic"),
         ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "NanumGothic"),
         ("C:/Windows/Fonts/malgun.ttf", "Malgun Gothic"),
         ("/System/Library/Fonts/AppleGothic.ttf", "AppleGothic"),
@@ -22,7 +23,6 @@ def set_korean_font():
     for path, name in candidates:
         if os.path.exists(path):
             try:
-                import matplotlib.font_manager as fm
                 fm.fontManager.addfont(path)
             except Exception:
                 pass
@@ -36,6 +36,8 @@ set_korean_font()
 st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide")
 st.title("📊 공급량 실적 및 계획 상세")
 
+# ─────────────────────────────────────────────────────────
+# 표 기본 구조(행 순서 고정)
 ROWS_SPEC = [
     ("가정용", "취사용"),
     ("가정용", "개별난방"),
@@ -44,7 +46,7 @@ ROWS_SPEC = [
     ("영업용", "일반용1"),
     ("업무용", "일반용2"),
     ("업무용", "냉난방용"),
-    ("업무용", "주한미군"),     # ← 표준 명칭
+    ("업무용", "주한미군"),
     ("업무용", "소계"),
     ("산업용", "합계"),
     ("열병합", "합계"),
@@ -56,45 +58,50 @@ ROWS_SPEC = [
     ("수송용", "소계"),
     ("합계", ""),
 ]
-MONTH_COLS = [f"{m}월" for m in range(1, 13)]
-ALL_COLS = ["구분","세부"] + MONTH_COLS + ["합계"]
+MONTH_COLS = [f"{m}월" for m in range(1, 12 + 1)]
+ALL_COLS = ["구분", "세부"] + MONTH_COLS + ["합계"]
 
 def blank_table():
-    df = pd.DataFrame(ROWS_SPEC, columns=["구분","세부"])
-    for c in MONTH_COLS: df[c] = np.nan
+    df = pd.DataFrame(ROWS_SPEC, columns=["구분", "세부"])
+    for c in MONTH_COLS:
+        df[c] = np.nan
     df["합계"] = np.nan
     return df
 
-def norm(s: str) -> str:
-    if s is None: return ""
+def norm(s) -> str:
+    if s is None:
+        return ""
     s = unicodedata.normalize("NFKC", str(s)).strip().lower()
     return re.sub(r"\s+", "", s)
 
+# 동의어(스크린샷에 보인 '업무난방' 등을 포함)
 SYN = {
-    "취사용": ["취사용","취사","주택취사"],
-    "개별난방": ["개별난방","개난","개별 난방"],
-    "중앙난방": ["중앙난방","중난","중앙 난방"],
-    "일반용1": ["일반용1","영업용1","일반1"],
-    "일반용2": ["일반용2","업무용2","업무일반2"],
-    "냉난방용": ["냉난방용","냉난방","냉/난방"],
-    "주한미군": ["주한미군","주택미군","주한 미군","usfk","주택미급"],
-    "산업용": ["산업용","산업"],
-    "열병합": ["열병합","chp"],
-    "연료전지": ["연료전지","fc"],
-    "자가열병합": ["자가열병합","자가 chp"],
-    "열전용설비용": ["열전용설비용","열전용"],
-    "CNG": ["cng","씨엔지"],
-    "BIO": ["bio","바이오"],
+    "취사용": ["취사용", "취사", "주택취사"],
+    "개별난방": ["개별난방", "개난", "개별 난방"],
+    "중앙난방": ["중앙난방", "중난", "중앙 난방"],
+    "일반용1": ["일반용1", "영업용1", "일반1"],
+    "일반용2": ["일반용2", "업무용", "업무난방", "업무용난방", "업무 일반"],
+    "냉난방용": ["냉난방용", "냉난방", "냉/난방", "업무냉난방"],
+    "주한미군": ["주한미군", "주택미군", "주한 미군", "usfk", "주택미급"],
+    "산업용": ["산업용", "산업"],
+    "열병합": ["열병합", "chp"],
+    "연료전지": ["연료전지", "fc"],
+    "자가열병합": ["자가열병합", "자가 chp"],
+    "열전용설비용": ["열전용설비용", "열전용"],
+    "CNG": ["cng", "씨엔지"],
+    "BIO": ["bio", "바이오"],
 }
-YEAR_HINTS  = ["연도","년도","year","yr","연"]
-MONTH_HINTS = ["월","month","mm","mon"]
-DATE_HINTS  = ["일자","날짜","date","기준일"]
+
+YEAR_HINTS  = ["연도", "년도", "year", "yr", "연"]
+MONTH_HINTS = ["월", "month", "mm", "mon"]
+DATE_HINTS  = ["일자", "날짜", "date", "기준일"]
 
 def best_match(colnames, aliases):
     cn = [norm(c) for c in colnames]
     for al in aliases:
         nal = norm(al)
-        if nal in cn: return colnames[cn.index(nal)]
+        if nal in cn:
+            return colnames[cn.index(nal)]
     for i, c in enumerate(cn):
         for al in aliases:
             if norm(al) and norm(al) in c:
@@ -124,29 +131,45 @@ def detect_year_col(cols):  return best_match(cols, YEAR_HINTS)
 def detect_month_col(cols): return best_match(cols, MONTH_HINTS)
 def detect_date_col(cols):  return best_match(cols, DATE_HINTS)
 
+def _epoch_to_dt(series: pd.Series):
+    s = pd.to_numeric(series, errors="coerce")
+    med = s.dropna().astype("float64").abs().median()
+    if med > 1e12:
+        return pd.to_datetime(s, errors="coerce")
+    elif med > 1e10:
+        return pd.to_datetime(s, unit="ms", errors="coerce")
+    elif med > 1e9:
+        return pd.to_datetime(s, unit="s", errors="coerce")
+    else:
+        return None
+
 def calc_subtotals(table: pd.DataFrame) -> pd.DataFrame:
     t = table.copy()
 
     def sum_numeric(mask, col):
         return pd.to_numeric(t.loc[mask, col], errors="coerce").sum()
 
-    m_sc = (t["구분"]=="가정용") & (t["세부"]=="소계")
+    # 가정용 소계
+    m_sc = (t["구분"] == "가정용") & (t["세부"] == "소계")
     for c in MONTH_COLS:
-        m_body = (t["구분"]=="가정용") & (t["세부"].isin(["취사용","개별난방","중앙난방"]))
+        m_body = (t["구분"] == "가정용") & (t["세부"].isin(["취사용", "개별난방", "중앙난방"]))
         t.loc[m_sc, c] = sum_numeric(m_body, c)
 
-    m_sc = (t["구분"]=="업무용") & (t["세부"]=="소계")
+    # 업무용 소계
+    m_sc = (t["구분"] == "업무용") & (t["세부"] == "소계")
     for c in MONTH_COLS:
-        m_body = (t["구분"]=="업무용") & (t["세부"].isin(["일반용2","냉난방용","주한미군"]))
+        m_body = (t["구분"] == "업무용") & (t["세부"].isin(["일반용2", "냉난방용", "주한미군"]))
         t.loc[m_sc, c] = sum_numeric(m_body, c)
 
-    m_sc = (t["구분"]=="수송용") & (t["세부"]=="소계")
+    # 수송용 소계(BIO)
+    m_sc = (t["구분"] == "수송용") & (t["세부"] == "소계")
     for c in MONTH_COLS:
-        m_body = (t["구분"]=="수송용") & (t["세부"]=="BIO")
+        m_body = (t["구분"] == "수송용") & (t["세부"] == "BIO")
         t.loc[m_sc, c] = sum_numeric(m_body, c)
 
-    m_total = (t["구분"]=="합계")
-    m_body  = (t["구분"]!="합계") & t["세부"].ne("소계") & t["세부"].ne("합계")
+    # 전체 합계(소계/합계 라인은 제외)
+    m_total = (t["구분"] == "합계")
+    m_body = (t["구분"] != "합계") & t["세부"].ne("소계") & t["세부"].ne("합계")
     for c in MONTH_COLS:
         t.loc[m_total, c] = sum_numeric(m_body, c)
 
@@ -155,194 +178,245 @@ def calc_subtotals(table: pd.DataFrame) -> pd.DataFrame:
 
 def highlight_rows(df: pd.DataFrame):
     styles = pd.DataFrame("", index=df.index, columns=df.columns)
-    styles.loc[df["세부"]=="소계", :] = "background-color:#f2f7ff"
-    styles.loc[df["구분"]=="합계", :] = "background-color:#fff3e6"
+    styles.loc[df["세부"] == "소계", :] = "background-color:#f2f7ff"
+    styles.loc[df["구분"] == "합계", :] = "background-color:#fff3e6"
     return styles
 
 def coerce_numeric_inplace(df: pd.DataFrame):
-    """월/합계 숫자형 강제 + NaN→0 (None 표기 제거용)"""
+    """월/합계 숫자형 강제 + NaN→0"""
     for c in MONTH_COLS + ["합계"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
-# ───────── 데이터 소스 ─────────
+# ─────────────────────────────────────────────────────────
+# 공통 처리: 한 시트(df) → 자동매핑 → 연도별 표/그래프 데이터 생성
+def prepare_df(df_in: pd.DataFrame):
+    df = df_in.copy()
+
+    # 연/월 추출
+    year_col  = detect_year_col(df.columns)
+    month_col = detect_month_col(df.columns)
+    date_col  = detect_date_col(df.columns)
+
+    if (year_col is None or month_col is None) and (date_col is not None):
+        base_dt = pd.to_datetime(df[date_col], errors="coerce")
+        if year_col is None:
+            df["_연도_"] = base_dt.dt.year.astype("Int64")
+        if month_col is None:
+            df["_월_"] = base_dt.dt.month.astype("Int64")
+
+    if "_연도_" not in df.columns:
+        if year_col is None:
+            raise ValueError("연(연도) 컬럼을 찾을 수 없습니다.")
+        y = df[year_col]
+        if is_dt(y):
+            y = y.dt.year
+        elif is_integer_dtype(y):
+            dt = _epoch_to_dt(y)
+            if dt is not None:
+                y = dt.dt.year
+        else:
+            y = pd.to_numeric(y, errors="coerce")
+        df["_연도_"] = y.astype("Int64")
+
+    if "_월_" not in df.columns:
+        if month_col is None:
+            raise ValueError("월 컬럼을 찾을 수 없습니다.")
+        m = df[month_col]
+        if is_dt(m):
+            m = m.dt.month
+        else:
+            m = pd.to_numeric(m, errors="coerce")
+        df["_월_"] = m.astype("Int64")
+
+    # 자동매핑
+    auto_map = auto_map_usage_columns(df)
+    return df, auto_map
+
+def monthly_sum(df, year, col):
+    sub = df.loc[df["_연도_"] == year, ["_월_", col]].copy()
+    sub[col] = pd.to_numeric(sub[col], errors="coerce")
+    s = sub.groupby("_월_")[col].sum(min_count=1)
+    out = pd.Series(index=range(1, 13), dtype="float64")
+    out.update(s)
+    return out
+
+def build_table_for_year(df, auto_map, year: int) -> pd.DataFrame:
+    base = blank_table()
+
+    # 1) 세부 항목(취사용/개별난방/중앙난방/일반용1/일반용2/냉난방용/주한미군/BIO) 직접 채우기
+    leaf_map = {
+        ("가정용", "취사용"): "취사용",
+        ("가정용", "개별난방"): "개별난방",
+        ("가정용", "중앙난방"): "중앙난방",
+        ("영업용", "일반용1"): "일반용1",
+        ("업무용", "일반용2"): "일반용2",
+        ("업무용", "냉난방용"): "냉난방용",
+        ("업무용", "주한미군"): "주한미군",
+        ("수송용", "BIO"): "BIO",
+    }
+    for (g, d), key in leaf_map.items():
+        src = auto_map.get(key)
+        if src:
+            s = monthly_sum(df, year, src)
+            for m in range(1, 13):
+                base.loc[(base["구분"] == g) & (base["세부"] == d), f"{m}월"] = float(s[m]) if pd.notna(s[m]) else 0.0
+
+    # 2) 합계형 라인(산업용·열병합·연료전지·자가열병합·열전용설비용·CNG) → 해당 열을 직접 매핑
+    direct_groups = ["산업용", "열병합", "연료전지", "자가열병합", "열전용설비용", "CNG"]
+    for g in direct_groups:
+        src = auto_map.get(g)
+        if src:
+            s = monthly_sum(df, year, src)
+            for m in range(1, 13):
+                base.loc[(base["구분"] == g) & (base["세부"] == "합계"), f"{m}월"] = float(s[m]) if pd.notna(s[m]) else 0.0
+
+    # 3) 소계/전체 합계 계산
+    filled = calc_subtotals(base)
+    coerce_numeric_inplace(filled)  # None → 0
+    return filled
+
+# ─────────────────────────────────────────────────────────
+# 데이터 소스 선택
 sb = st.sidebar
 sb.header("데이터 불러오기")
-source = sb.radio("데이터 소스", ["리포 파일 사용", "엑셀 업로드(.xlsx)"], index=0)
+src_mode = sb.radio("데이터 소스", ["리포 파일 사용", "엑셀 업로드(.xlsx)"], index=0)
 
-if source == "리포 파일 사용":
+if src_mode == "리포 파일 사용":
     if not os.path.exists(DEFAULT_REPO_FILE):
-        st.error(f"리포에 `{DEFAULT_REPO_FILE}` 파일이 없습니다. 업로드 모드를 사용하세요.")
+        st.error(f"`{DEFAULT_REPO_FILE}` 파일이 리포에 없습니다. 업로드 모드를 사용하세요.")
         st.stop()
     import openpyxl
     xls = pd.ExcelFile(DEFAULT_REPO_FILE, engine="openpyxl")
-    current_source_name = DEFAULT_REPO_FILE
+    file_name = DEFAULT_REPO_FILE
 else:
     up = sb.file_uploader("엑셀 업로드(.xlsx)", type=["xlsx"])
     if not up:
-        st.info("엑셀을 업로드하면 표가 채워집니다.")
+        st.info("엑셀을 업로드하면 표/그래프가 표시됩니다.")
         st.stop()
     import openpyxl
     xls = pd.ExcelFile(io.BytesIO(up.getvalue()), engine="openpyxl")
-    current_source_name = up.name
+    file_name = up.name
 
-sheet = sb.selectbox("시트 선택", options=xls.sheet_names,
-                     index=(xls.sheet_names.index("데이터") if "데이터" in xls.sheet_names else 0))
-raw0 = xls.parse(sheet, header=0)
+# 시트 중에서 시나리오 후보(존재하는 것만)
+scenario_candidates = [s for s in ["데이터", "best", "conservative"] if s in xls.sheet_names]
+if not scenario_candidates:
+    scenario_candidates = [xls.sheet_names[0]]
 
-# ───────── 연/월 추출 ─────────
-def _epoch_to_dt(series: pd.Series):
-    s = pd.to_numeric(series, errors="coerce")
-    med = s.dropna().astype("float64").abs().median()
-    if med > 1e12:   return pd.to_datetime(s, errors="coerce")
-    elif med > 1e10: return pd.to_datetime(s, unit="ms", errors="coerce")
-    elif med > 1e9:  return pd.to_datetime(s, unit="s", errors="coerce")
-    else:            return None
+st.caption(f"소스: {file_name}")
 
-df = raw0.copy()
-year_col  = detect_year_col(df.columns)
-month_col = detect_month_col(df.columns)
-date_col  = detect_date_col(df.columns)
+# 시나리오 탭(데이터 / best / conservative)
+scenario_tabs = st.tabs(scenario_candidates)
 
-if (year_col is None or month_col is None) and (date_col is not None):
-    base_dt = pd.to_datetime(df[date_col], errors="coerce")
-    if year_col is None:  df["_연도_"] = base_dt.dt.year.astype("Int64")
-    if month_col is None: df["_월_"]  = base_dt.dt.month.astype("Int64")
+for scen_idx, scen in enumerate(scenario_candidates):
+    with scenario_tabs[scen_idx]:
+        st.subheader(f"시나리오: {scen}")
 
-if "_연도_" not in df.columns:
-    if year_col is None:
-        st.error("연(연도) 컬럼을 못 찾았습니다.")
-        st.stop()
-    y = df[year_col]
-    if is_dt(y): y = y.dt.year
-    elif is_integer_dtype(y):
-        dt = _epoch_to_dt(y)
-        if dt is not None: y = dt.dt.year
-    else:
-        y = pd.to_numeric(y, errors="coerce")
-    df["_연도_"] = y.astype("Int64")
+        raw = xls.parse(scen, header=0)
 
-if "_월_" not in df.columns:
-    if month_col is None:
-        st.error("월 컬럼을 못 찾았습니다.")
-        st.stop()
-    m = df[month_col]
-    if is_dt(m): m = m.dt.month
-    else:       m = pd.to_numeric(m, errors="coerce")
-    df["_월_"] = m.astype("Int64")
-
-# ───────── 자동 매핑 ─────────
-auto_map = auto_map_usage_columns(df)
-with sb.expander("자동 매핑 결과(필요 시 수정)", expanded=False):
-    for k in SYN.keys():
-        candidates = [c for c in df.columns if likely_numeric(df[c])]
-        default = auto_map.get(k)
-        if default and default not in candidates:
-            candidates = [default] + candidates
-        auto_map[k] = st.selectbox(k, [None] + candidates, index=(0 if default is None else ([None]+candidates).index(default)))
-
-years_avail = sorted(df["_연도_"].dropna().unique().tolist())
-year_labels = ["전체"] + [str(y) for y in years_avail]
-st.subheader("연도 선택")
-year_selected = st.multiselect("", year_labels, default=["전체"], label_visibility="collapsed")
-
-if not year_selected:
-    st.warning("연도를 1개 이상 선택하세요.")
-    st.stop()
-if "전체" in year_selected:
-    sel_years = years_avail
-else:
-    sel_years = sorted([int(y) for y in year_selected if y != "전체"])
-
-def monthly_sum(df, year, col):
-    sub = df.loc[df["_연도_"]==year, ["_월_", col]].copy()
-    if is_dt(sub[col]): sub[col] = pd.NA
-    sub[col] = pd.to_numeric(sub[col], errors="coerce")
-    s = sub.groupby("_월_")[col].sum(min_count=1)
-    out = pd.Series(index=range(1,13), dtype="float64"); out.update(s)
-    return out
-
-def build_table_for_year(year:int) -> pd.DataFrame:
-    base = blank_table()
-    for g,d in ROWS_SPEC:
-        if d in ["소계","합계","BIO"]:
+        try:
+            df_prepared, auto_map = prepare_df(raw)
+        except Exception as e:
+            st.error(f"[{scen}] 시트 처리 중 오류: {e}")
             continue
-        src = auto_map.get(d)
-        if src:
-            s = monthly_sum(df, year, src)
-            for m in range(1,13):
-                base.loc[(base["구분"]==g)&(base["세부"]==d), f"{m}월"] = float(s[m]) if pd.notna(s[m]) else np.nan
-    if auto_map.get("BIO"):
-        s = monthly_sum(df, year, auto_map["BIO"])
-        for m in range(1,13):
-            base.loc[(base["구분"]=="수송용")&(base["세부"]=="BIO"), f"{m}월"] = float(s[m]) if pd.notna(s[m]) else np.nan
-    filled = calc_subtotals(base)
-    coerce_numeric_inplace(filled)   # ← 숫자형 강제 + NaN→0  >>> None 제거 핵심
-    return filled
 
-st.caption(f"소스: {current_source_name} · 시트: {sheet}")
-tabs = st.tabs([f"{y}년 표" for y in sel_years])
-tables_per_year = {}
-for i, y in enumerate(sel_years):
-    with tabs[i]:
-        tbl = build_table_for_year(y)
-        tables_per_year[y] = tbl
-        # 보기용: 정수로 보이고 싶으면 아래 주석 해제
-        # for c in MONTH_COLS + ["합계"]: tbl[c] = tbl[c].round(0).astype("Int64")
-        sty = tbl[ALL_COLS].style.apply(highlight_rows, axis=None)\
-                .format({c: "{:,.0f}".format for c in MONTH_COLS + ["합계"]})
-        st.dataframe(sty, use_container_width=True)
+        # 자동 매핑 확인(필요 시 UI로 직접 수정 가능)
+        with st.expander("자동 매핑 결과(필요시 수정)", expanded=False):
+            for k in SYN.keys():
+                candidates = [c for c in df_prepared.columns if likely_numeric(df_prepared[c])]
+                default = auto_map.get(k)
+                if default and default not in candidates:
+                    candidates = [default] + candidates
+                auto_map[k] = st.selectbox(k, [None] + candidates,
+                                           index=(0 if default is None else ([None] + candidates).index(default)),
+                                           key=f"{scen}-{k}")
 
-# ───────── 동적 그래프 ─────────
-st.subheader("월별 추이 그래프")
-all_groups = ["전체","가정용","영업용","업무용","산업용","열병합","연료전지","자가열병합","열전용설비용","CNG","수송용"]
-group_sel = st.radio("보기 선택", all_groups, horizontal=True, index=0)
+        # 2024~2027 탭
+        years_all = sorted(df_prepared["_연도_"].dropna().unique().tolist())
+        # 4개년(2024~2027) 모두 탭으로 구성 (데이터 없으면 0으로 채워진 표)
+        year_tabs = st.tabs([f"{y}년 표" for y in [2024, 2025, 2026, 2027]])
+        tables = {}
 
-def series_from_table(tbl: pd.DataFrame, group: str):
-    if group=="전체":
-        mask = tbl["구분"].ne("합계") & tbl["세부"].ne("소계") & tbl["세부"].ne("합계")
-    else:
-        mask = (tbl["구분"]==group) & tbl["세부"].ne("소계") & tbl["세부"].ne("합계")
-    s = tbl.loc[mask, MONTH_COLS].apply(pd.to_numeric, errors="coerce").sum(numeric_only=True)
-    return [float(s.get(f"{m}월", 0.0)) for m in range(1,13)]
+        for i, y in enumerate([2024, 2025, 2026, 2027]):
+            with year_tabs[i]:
+                if y in years_all:
+                    tbl = build_table_for_year(df_prepared, auto_map, y)
+                else:
+                    tbl = blank_table()
+                    coerce_numeric_inplace(tbl)  # 0 채움
+                    tbl = calc_subtotals(tbl)    # 형식 맞추기
 
-chart_rows = []
-for y in sel_years:
-    ys = series_from_table(tables_per_year[y], group_sel)
-    for m, v in enumerate(ys, start=1):
-        chart_rows.append({"연도": str(y), "월": m, "공급량(㎥)": v})
-chart_df = pd.DataFrame(chart_rows)
+                # 보기용 포맷(정수)
+                view = tbl.copy()
+                for c in MONTH_COLS + ["합계"]:
+                    view[c] = pd.to_numeric(view[c], errors="coerce").fillna(0).round(0).astype(int)
 
-selection = alt.selection_point(fields=["연도"], bind="legend")
-line = (
-    alt.Chart(chart_df)
-    .mark_line(point=True)
-    .encode(
-        x=alt.X("월:O", title="월"),
-        y=alt.Y("공급량(㎥):Q", title="공급량(㎥)"),
-        color=alt.Color("연도:N", legend=alt.Legend(title="연도")),
-        tooltip=["연도","월","공급량(㎥)"]
-    )
-    .add_params(selection)
-    .transform_filter(selection)
-).properties(width="container", height=360)
+                sty = view[ALL_COLS].style.apply(highlight_rows, axis=None)\
+                    .format({c: "{:,.0f}".format for c in MONTH_COLS + ["합계"]})
+                st.dataframe(sty, use_container_width=True)
+                tables[y] = tbl
 
-st.altair_chart(line, use_container_width=True)
+        # 동적 그래프
+        st.subheader("월별 추이 그래프")
+        groups = ["전체", "가정용", "영업용", "업무용", "산업용", "열병합", "연료전지", "자가열병합",
+                  "열전용설비용", "CNG", "수송용"]
+        group_sel = st.radio("보기 선택", groups, horizontal=True, index=0, key=f"grp-{scen}")
 
-# ───────── 다운로드 ─────────
-st.subheader("다운로드")
-c1, c2 = st.columns(2)
-with c1:
-    y0 = sel_years[0]
-    st.download_button(
-        f"{y0}년 표 CSV 다운로드",
-        data=tables_per_year[y0][ALL_COLS].to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"supply_table_{y0}.csv",
-        mime="text/csv"
-    )
-with c2:
-    st.download_button(
-        "그래프 데이터 CSV 다운로드",
-        data=chart_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"supply_timeseries_{group_sel}_{'-'.join(map(str,sel_years))}.csv",
-        mime="text/csv"
-    )
+        def series_from_table(tbl: pd.DataFrame, group: str):
+            if group == "전체":
+                mask = tbl["구분"].ne("합계") & tbl["세부"].ne("소계") & tbl["세부"].ne("합계")
+            elif group == "수송용":
+                # BIO만 존재 → 소계가 총량, 그래프는 소계로 표현
+                mask = (tbl["구분"] == "수송용") & tbl["세부"].eq("소계")
+            else:
+                # 합계 라인(산업용/열병합 등)은 '합계'를 사용
+                if group in ["산업용", "열병합", "연료전지", "자가열병합", "열전용설비용", "CNG"]:
+                    mask = (tbl["구분"] == group) & (tbl["세부"] == "합계")
+                else:
+                    mask = (tbl["구분"] == group) & tbl["세부"].ne("소계") & tbl["세부"].ne("합계")
+            s = tbl.loc[mask, MONTH_COLS].apply(pd.to_numeric, errors="coerce").sum(numeric_only=True)
+            return [float(s.get(f"{m}월", 0.0)) for m in range(1, 13)]
+
+        # 그래프 데이터(선택 그룹 × 2024~2027)
+        rows = []
+        for y in [2024, 2025, 2026, 2027]:
+            t = tables[y]
+            ys = series_from_table(t, group_sel)
+            for m, v in enumerate(ys, start=1):
+                rows.append({"연도": str(y), "월": m, "공급량(㎥)": v})
+        chart_df = pd.DataFrame(rows)
+
+        selection = alt.selection_point(fields=["연도"], bind="legend")
+        chart = (
+            alt.Chart(chart_df)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("월:O", title="월"),
+                y=alt.Y("공급량(㎥):Q", title="공급량(㎥)"),
+                color=alt.Color("연도:N", legend=alt.Legend(title="연도")),
+                tooltip=["연도", "월", "공급량(㎥)"],
+            )
+            .add_params(selection)
+            .transform_filter(selection)
+        ).properties(width="container", height=360)
+        st.altair_chart(chart, use_container_width=True)
+
+        # 다운로드
+        st.subheader("다운로드")
+        c1, c2 = st.columns(2)
+        with c1:
+            y0 = 2024
+            st.download_button(
+                f"{scen} - {y0}년 표 CSV",
+                data=tables[y0][ALL_COLS].to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"{scen}_table_{y0}.csv",
+                mime="text/csv",
+                key=f"csv1-{scen}",
+            )
+        with c2:
+            st.download_button(
+                f"{scen} 그래프 데이터 CSV",
+                data=chart_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"{scen}_timeseries_{group_sel}.csv",
+                mime="text/csv",
+                key=f"csv2-{scen}",
+            )
