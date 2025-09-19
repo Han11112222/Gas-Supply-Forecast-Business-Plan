@@ -134,18 +134,51 @@ def fig_yearly_stacked(df: pd.DataFrame):
     ax.grid(True, axis="y", alpha=0.3)
     return fig, pivot
 
-# ───────── 파일 입력 (업로드 전용) ─────────
+# ───────── 파일 입력 (레포 파일 사용 + 업로드) ─────────
 left, right = st.columns([1,2])
 with left:
-    src = st.radio("데이터 소스 선택", ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"], index=0, horizontal=False)
+    # 레포에 포함된 xlsx/csv 자동 탐색
+    repo_dir = Path(__file__).parent
+    repo_xlsx = sorted(repo_dir.glob("*.xlsx"))
+    repo_csv  = sorted(repo_dir.glob("*.csv"))
+
+    has_repo_files = len(repo_xlsx) + len(repo_csv) > 0
+    sources = ["레포에 있는 파일 사용"] if has_repo_files else []
+    sources += ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"]
+
+    src = st.radio("데이터 소스 선택", sources, index=0, horizontal=False)
 
 raw, sheet_name = None, None
 
-if src == "엑셀 업로드(.xlsx)":
+def load_repo_file_picker():
+    files = []
+    files += [("xlsx", p) for p in repo_xlsx]
+    files += [("csv",  p) for p in repo_csv]
+    if not files:
+        st.warning("레포에 xlsx/csv 파일이 없습니다. 업로드를 선택하세요.")
+        return None, None
+    labels = [p.name for _, p in files]
+    idx = st.selectbox("레포 파일 선택", options=list(range(len(labels))), format_func=lambda i: labels[i])
+    kind, path = files[idx]
+    if kind == "xlsx":
+        sheets = load_excel(str(path))
+        names = list(sheets.keys())
+        # “3-2 공급량상세” 시트 우선 선택
+        default_idx = names.index("3-2 공급량상세") if "3-2 공급량상세" in names else 0
+        sn = st.selectbox("시트 선택", options=names, index=default_idx)
+        return sheets[sn], sn
+    else:
+        df = load_csv(str(path))
+        return df, None
+
+# 분기
+if src == "레포에 있는 파일 사용":
+    raw, sheet_name = load_repo_file_picker()
+
+elif src == "엑셀 업로드(.xlsx)":
     up = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
     if up:
         sheets = load_excel(up.getvalue())
-        # 3-2 시트가 있으면 우선 선택
         names = list(sheets.keys())
         idx = names.index("3-2 공급량상세") if "3-2 공급량상세" in names else 0
         sheet_name = st.selectbox("시트 선택", options=names, index=idx)
@@ -157,7 +190,7 @@ elif src == "CSV 업로드(.csv)":
         raw = load_csv(upc.getvalue())
 
 if raw is None:
-    st.info("파일을 업로드하면 미리보기가 나타납니다.")
+    st.info("레포 파일을 선택하거나, 파일을 업로드하면 미리보기가 나타납니다.")
     st.stop()
 
 # ───────── 컬럼 매핑 ─────────
