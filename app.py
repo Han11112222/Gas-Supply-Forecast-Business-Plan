@@ -1,9 +1,7 @@
 # app.py — 도시가스 공급량 사업계획(3-2 공급량상세) 대시보드
-# - 파일: 샘플(csv/xlsx) 또는 업로드 파일 사용
-# - 시트: "3-2 공급량상세" 기본값(엑셀일 때), CSV는 시트 선택 없음
-# - 컬럼 매핑 UI로 어떤 형식이든 정규화 → 요약표 + 동적 그래프
-# - 연도: 2024(전년도 실적), 2025 계획(Normal/Best/Conservative), 2026/2027 계획 지원
-# - 다운로드: 정규화 데이터/요약표/현재 뷰
+# - 파일: 업로드(.xlsx/.csv)만 사용 (샘플 분기 제거)
+# - 시트: 엑셀은 "3-2 공급량상세"를 우선 선택(있을 경우)
+# - 컬럼 매핑 UI로 정규화 → 요약표 + 동적 그래프
 
 import os, io, hashlib
 from pathlib import Path
@@ -25,7 +23,7 @@ set_korean_font()
 
 st.set_page_config(page_title="3-2 공급량상세 대시보드", layout="wide")
 st.title("📊 3-2 공급량상세 대시보드")
-st.caption("연도·시나리오·용도별 요약표와 동적 그래프 · 업로드 또는 샘플 데이터 사용 가능")
+st.caption("연도·시나리오·용도별 요약표와 동적 그래프 · 업로드 데이터 사용")
 
 # ───────── 유틸 ─────────
 @st.cache_data(show_spinner=False)
@@ -33,21 +31,17 @@ def file_bytes_digest(b: bytes) -> str:
     return hashlib.md5(b).hexdigest()
 
 @st.cache_data(show_spinner=True)
-def load_excel(bytes_or_path, sheet_name=None) -> dict:
+def load_excel(bytes_or_path) -> dict:
     """엑셀 전체 시트 로드 → dict[str, DataFrame]"""
     import openpyxl  # ensure engine
     if isinstance(bytes_or_path, (str, os.PathLike)):
         xls = pd.ExcelFile(bytes_or_path, engine="openpyxl")
     else:
         xls = pd.ExcelFile(io.BytesIO(bytes_or_path), engine="openpyxl")
-    sheets = {}
-    for sn in xls.sheet_names:
-        sheets[sn] = xls.parse(sn)
-    return sheets
+    return {sn: xls.parse(sn) for sn in xls.sheet_names}
 
 @st.cache_data(show_spinner=True)
 def load_csv(bytes_or_path) -> pd.DataFrame:
-    """CSV 단일 시트 취급"""
     if isinstance(bytes_or_path, (str, os.PathLike)):
         return pd.read_csv(bytes_or_path)
     else:
@@ -55,15 +49,7 @@ def load_csv(bytes_or_path) -> pd.DataFrame:
 
 def try_autodetect_columns(df: pd.DataFrame):
     cols = df.columns.astype(str).tolist()
-    guess = {
-        "연도": None,
-        "시나리오": None,
-        "용도": None,
-        "세부용도": None,
-        "월": None,
-        "값": None,
-        "wide_months": [],
-    }
+    guess = {"연도":None,"시나리오":None,"용도":None,"세부용도":None,"월":None,"값":None,"wide_months":[]}
     for c in cols:
         lc = c.lower()
         if guess["연도"] is None and ("연도" in c or "year" in lc):
@@ -78,7 +64,6 @@ def try_autodetect_columns(df: pd.DataFrame):
             guess["월"] = c
         if guess["값"] is None and (c in ["공급량","공급량(㎥)","값","수량","value"] or "공급" in c):
             guess["값"] = c
-
     # 1~12 또는 '1월'~'12월' 와이드 형태 감지
     for c in cols:
         s = c.replace("월","")
@@ -90,7 +75,6 @@ def try_autodetect_columns(df: pd.DataFrame):
             m = int(c)
             if 1 <= m <= 12:
                 guess["wide_months"].append(c)
-
     return guess
 
 def melt_month_wide(df, id_vars, month_cols):
@@ -101,11 +85,9 @@ def melt_month_wide(df, id_vars, month_cols):
 
 def normalize_df(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     df = df.copy()
-    # 와이드 → 롱
     if mapping.get("wide_months"):
         id_vars = [c for c in [mapping.get("연도"), mapping.get("시나리오"), mapping.get("용도"), mapping.get("세부용도")] if c]
-        month_cols = mapping["wide_months"]
-        ndf = melt_month_wide(df, id_vars=id_vars, month_cols=month_cols)
+        ndf = melt_month_wide(df, id_vars=id_vars, month_cols=mapping["wide_months"])
     else:
         ndf = pd.DataFrame({
             "연도": df[mapping["연도"]] if mapping.get("연도") else np.nan,
@@ -115,7 +97,6 @@ def normalize_df(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
             "월": df[mapping["월"]] if mapping.get("월") else np.nan,
             "공급량(㎥)": df[mapping["값"]] if mapping.get("값") else np.nan,
         })
-
     # 타입 정리
     ndf["연도"] = pd.to_numeric(ndf["연도"], errors="coerce").astype("Int64")
     ndf["월"] = pd.to_numeric(ndf["월"], errors="coerce").astype("Int64")
@@ -139,7 +120,6 @@ def fig_monthly_lines(df: pd.DataFrame, selected_usage: str, hue: str = "연도/
     return fig
 
 def fig_yearly_stacked(df: pd.DataFrame):
-    # 연도/시나리오 x 용도 스택
     pivot = df.pivot_table(index="연도/시나리오", columns="용도", values="공급량(㎥)", aggfunc="sum").fillna(0.0)
     fig, ax = plt.subplots(figsize=(9,4))
     bottom = np.zeros(len(pivot))
@@ -154,10 +134,10 @@ def fig_yearly_stacked(df: pd.DataFrame):
     ax.grid(True, axis="y", alpha=0.3)
     return fig, pivot
 
-# ───────── 파일 입력 (샘플 제거, 업로드만) ─────────
+# ───────── 파일 입력 (업로드 전용) ─────────
 left, right = st.columns([1,2])
 with left:
-    src = st.radio("데이터 소스 선택", ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"], horizontal=False)
+    src = st.radio("데이터 소스 선택", ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"], index=0, horizontal=False)
 
 raw, sheet_name = None, None
 
@@ -165,12 +145,10 @@ if src == "엑셀 업로드(.xlsx)":
     up = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
     if up:
         sheets = load_excel(up.getvalue())
-        sheet_name = st.selectbox(
-            "시트 선택",
-            options=list(sheets.keys()),
-            index=(list(sheets.keys()).index("3-2 공급량상세")
-                   if "3-2 공급량상세" in sheets else 0)
-        )
+        # 3-2 시트가 있으면 우선 선택
+        names = list(sheets.keys())
+        idx = names.index("3-2 공급량상세") if "3-2 공급량상세" in names else 0
+        sheet_name = st.selectbox("시트 선택", options=names, index=idx)
         raw = sheets[sheet_name]
 
 elif src == "CSV 업로드(.csv)":
@@ -182,115 +160,105 @@ if raw is None:
     st.info("파일을 업로드하면 미리보기가 나타납니다.")
     st.stop()
 
-    else:
-        # 샘플 CSV 로드
-        sample_path = Path(__file__).parent / "sample_3-2_공급량상세.csv"
-        raw = load_csv(str(sample_path))
-        sheet_name = None
-
 # ───────── 컬럼 매핑 ─────────
-if raw is not None and len(raw) > 0:
-    st.subheader("데이터 미리보기")
-    st.dataframe(raw.head(30), use_container_width=True)
+st.subheader("데이터 미리보기")
+st.dataframe(raw.head(30), use_container_width=True)
 
-    guess = try_autodetect_columns(raw)
-    with st.expander("컬럼 매핑 (필요시 수정)", expanded=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            col_year = st.selectbox("연도 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["연도"]) + 1) if guess["연도"] in raw.columns else 0)
-            col_scn = st.selectbox("시나리오/계획 구분 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["시나리오"]) + 1) if guess["시나리오"] in raw.columns else 0)
-            col_use = st.selectbox("용도 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["용도"]) + 1) if guess["용도"] in raw.columns else 0)
-        with c2:
-            col_sub = st.selectbox("세부용도 열(선택)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["세부용도"]) + 1) if guess["세부용도"] in raw.columns else 0)
-            col_month = st.selectbox("월 열(롱형식일 때)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["월"]) + 1) if guess["월"] in raw.columns else 0)
-            col_val = st.selectbox("값/공급량 열(롱형식일 때)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["값"]) + 1) if guess["값"] in raw.columns else 0)
-
-        wide_months = st.multiselect(
-            "와이드(1~12월) 열들 선택 — 열에 '1'~'12' 또는 '1월'~'12월'",
-            options=raw.columns.tolist(),
-            default=[c for c in (guess["wide_months"] or []) if c in raw.columns],
-        )
-
-    mapping = {
-        "연도": col_year,
-        "시나리오": col_scn,
-        "용도": col_use,
-        "세부용도": col_sub,
-        "월": col_month,
-        "값": col_val,
-        "wide_months": wide_months,
-    }
-
-    # 정규화
-    tidy = normalize_df(raw, mapping)
-    if tidy.empty:
-        st.warning("정규화된 데이터가 비어 있습니다. 컬럼 매핑을 확인하세요.")
-        st.stop()
-
-    # 합성 키
-    tidy["연도/시나리오"] = tidy["연도"].astype(str) + "·" + tidy["시나리오"].astype(str)
-
-    # 필터
-    st.subheader("필터")
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        years = sorted(tidy["연도"].dropna().unique().tolist())
-        sel_years = st.multiselect("연도", years, default=[y for y in years if y in [2024,2025,2026,2027]] or years)
-    with f2:
-        scns = tidy["시나리오"].dropna().unique().tolist()
-        default_scns = [s for s in scns if s in ["실적","Normal","Best","Conservative","계획"]] or scns
-        sel_scns = st.multiselect("시나리오/계획", scns, default=default_scns)
-    with f3:
-        uses = tidy["용도"].dropna().unique().tolist()
-        sel_use = st.selectbox("용도 선택(그래프 기준)", ["전체"] + uses, index=0)
-
-    view = tidy.query("연도 in @sel_years and 시나리오 in @sel_scns").copy()
-
-    # 요약표 — (연도/시나리오 × 용도) 연간 합계
-    yearly = (view.groupby(["연도/시나리오","용도"], as_index=False)["공급량(㎥)"]
-              .sum()
-              .sort_values(["연도/시나리오","용도"]))
-    st.subheader("연도/시나리오 × 용도 연간 합계(㎥)")
-    st.dataframe(yearly, use_container_width=True)
-
-    # 스택 바
-    fig1, pivot1 = fig_yearly_stacked(view)
-    st.pyplot(fig1, use_container_width=True)
-
-    # 월별 추이 (선택 용도)
-    if sel_use == "전체":
-        plot_df = (view.groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
-        fig2 = fig_monthly_lines(plot_df, "전체(용도 합계)")
-    else:
-        plot_df = (view.query("용도 == @sel_use")
-                   .groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
-        fig2 = fig_monthly_lines(plot_df, sel_use)
-    st.pyplot(fig2, use_container_width=True)
-
-    # 다운로드
-    st.subheader("다운로드")
-    c1, c2, c3 = st.columns(3)
+guess = try_autodetect_columns(raw)
+with st.expander("컬럼 매핑 (필요시 수정)", expanded=True):
+    c1, c2 = st.columns(2)
     with c1:
-        st.download_button(
-            "정규화 데이터 CSV 다운로드",
-            data=tidy.to_csv(index=False).encode("utf-8-sig"),
-            file_name="normalized_3-2_supply.csv",
-            mime="text/csv"
-        )
+        col_year = st.selectbox("연도 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["연도"]) + 1) if guess["연도"] in raw.columns else 0)
+        col_scn  = st.selectbox("시나리오/계획 구분 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["시나리오"]) + 1) if guess["시나리오"] in raw.columns else 0)
+        col_use  = st.selectbox("용도 열", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["용도"]) + 1) if guess["용도"] in raw.columns else 0)
     with c2:
-        st.download_button(
-            "연간합계 피벗 CSV 다운로드",
-            data=pivot1.reset_index().to_csv(index=False).encode("utf-8-sig"),
-            file_name="yearly_usage_pivot.csv",
-            mime="text/csv"
-        )
-    with c3:
-        st.download_button(
-            "현재 뷰 CSV 다운로드",
-            data=view.to_csv(index=False).encode("utf-8-sig"),
-            file_name="current_view.csv",
-            mime="text/csv"
-        )
+        col_sub   = st.selectbox("세부용도 열(선택)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["세부용도"]) + 1) if guess["세부용도"] in raw.columns else 0)
+        col_month = st.selectbox("월 열(롱형식일 때)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["월"]) + 1) if guess["월"] in raw.columns else 0)
+        col_val   = st.selectbox("값/공급량 열(롱형식일 때)", [None] + raw.columns.tolist(), index=(raw.columns.tolist().index(guess["값"]) + 1) if guess["값"] in raw.columns else 0)
 
+    wide_months = st.multiselect(
+        "와이드(1~12월) 열들 선택 — 열에 '1'~'12' 또는 '1월'~'12월'",
+        options=raw.columns.tolist(),
+        default=[c for c in (guess["wide_months"] or []) if c in raw.columns],
+    )
+
+mapping = {
+    "연도": col_year,
+    "시나리오": col_scn,
+    "용도": col_use,
+    "세부용도": col_sub,
+    "월": col_month,
+    "값": col_val,
+    "wide_months": wide_months,
+}
+
+# 정규화
+tidy = normalize_df(raw, mapping)
+if tidy.empty:
+    st.warning("정규화된 데이터가 비어 있습니다. 컬럼 매핑을 확인하세요.")
+    st.stop()
+
+# 합성 키
+tidy["연도/시나리오"] = tidy["연도"].astype(str) + "·" + tidy["시나리오"].astype(str)
+
+# 필터
+st.subheader("필터")
+f1, f2, f3 = st.columns(3)
+with f1:
+    years = sorted(tidy["연도"].dropna().unique().tolist())
+    sel_years = st.multiselect("연도", years, default=[y for y in years if y in [2024,2025,2026,2027]] or years)
+with f2:
+    scns = tidy["시나리오"].dropna().unique().tolist()
+    default_scns = [s for s in scns if s in ["실적","Normal","Best","Conservative","계획"]] or scns
+    sel_scns = st.multiselect("시나리오/계획", scns, default=default_scns)
+with f3:
+    uses = tidy["용도"].dropna().unique().tolist()
+    sel_use = st.selectbox("용도 선택(그래프 기준)", ["전체"] + uses, index=0)
+
+view = tidy.query("연도 in @sel_years and 시나리오 in @sel_scns").copy()
+
+# 요약표 — (연도/시나리오 × 용도) 연간 합계
+yearly = (view.groupby(["연도/시나리오","용도"], as_index=False)["공급량(㎥)"]
+          .sum()
+          .sort_values(["연도/시나리오","용도"]))
+st.subheader("연도/시나리오 × 용도 연간 합계(㎥)")
+st.dataframe(yearly, use_container_width=True)
+
+# 스택 바
+fig1, pivot1 = fig_yearly_stacked(view)
+st.pyplot(fig1, use_container_width=True)
+
+# 월별 추이 (선택 용도)
+if sel_use == "전체":
+    plot_df = (view.groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
+    fig2 = fig_monthly_lines(plot_df, "전체(용도 합계)")
 else:
-    st.info("왼쪽에서 데이터 소스를 선택하고 파일/시트를 불러오세요.")
+    plot_df = (view.query("용도 == @sel_use")
+               .groupby(["연도/시나리오","월"], as_index=False)["공급량(㎥)"].sum())
+    fig2 = fig_monthly_lines(plot_df, sel_use)
+st.pyplot(fig2, use_container_width=True)
+
+# 다운로드
+st.subheader("다운로드")
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.download_button(
+        "정규화 데이터 CSV 다운로드",
+        data=tidy.to_csv(index=False).encode("utf-8-sig"),
+        file_name="normalized_3-2_supply.csv",
+        mime="text/csv"
+    )
+with c2:
+    st.download_button(
+        "연간합계 피벗 CSV 다운로드",
+        data=pivot1.reset_index().to_csv(index=False).encode("utf-8-sig"),
+        file_name="yearly_usage_pivot.csv",
+        mime="text/csv"
+    )
+with c3:
+    st.download_button(
+        "현재 뷰 CSV 다운로드",
+        data=view.to_csv(index=False).encode("utf-8-sig"),
+        file_name="current_view.csv",
+        mime="text/csv"
+    )
