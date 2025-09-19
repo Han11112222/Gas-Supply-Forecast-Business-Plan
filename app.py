@@ -1,7 +1,6 @@
-# app.py — 3-2 공급량상세 (엑셀 표 구조 그대로 읽기 + 자동 정규화 + 그래프)
-# - 엑셀 다중헤더/병합 셀/왼쪽 구분영역을 그대로 표시
-# - 시나리오 블록(2024 실적, 2025 계획 Normal/Best/Conservative, 2026/2027 계획) 자동 인식
-# - 레포 파일/업로드 모두 지원, 사이드바에서 헤더/계층/월 열 선택 → 정규화 → 요약표/그래프
+# app.py — 3-2 공급량상세 (엑셀 표 구조 그대로 + 자동 정규화 + 그래프)
+# - 사이드바: 데이터 소스 선택 → 레포 파일/업로드 → 시트 선택
+# - 캐시 직렬화 이슈 해결: 캐시는 bytes/DataFrame만 사용
 
 import os, io, re, hashlib
 from pathlib import Path
@@ -22,82 +21,63 @@ set_korean_font()
 
 st.set_page_config(page_title="3-2 공급량상세 대시보드", layout="wide")
 st.title("📊 3-2 공급량상세 대시보드")
-st.caption("엑셀 표 형태를 그대로 보여주고, 블록/월을 자동 인식해 정규화·요약·그래프까지 생성")
+st.caption("엑셀 표 형태 그대로 표시 → 월/블록 자동 인식 → 정규화·요약·그래프")
 
-# -------------------- 로더 --------------------
-@st.cache_data(show_spinner=True)
-def load_excel_bytes(bytes_or_path):
-    import openpyxl
-    if isinstance(bytes_or_path, (str, os.PathLike)):
-        xls = pd.ExcelFile(bytes_or_path, engine="openpyxl")
-    else:
-        xls = pd.ExcelFile(io.BytesIO(bytes_or_path), engine="openpyxl")
-    return xls  # ExcelFile 그대로 반환(다양한 header로 재파싱 가능)
+# -------------------- 캐시 가능한 유틸 --------------------
+@st.cache_data(show_spinner=False)
+def file_bytes_digest(b: bytes) -> str:
+    return hashlib.md5(b).hexdigest()
 
 @st.cache_data(show_spinner=True)
-def parse_sheet(xls, sheet_name: str, header_rows: int, skiprows: int):
-    """
-    header_rows: 1~4 범위 권장. 다중 헤더는 MultiIndex로 읽힘.
-    skiprows: 헤더 이전에 건너뛸 행 수(0이면 첫 행부터 헤더 시작).
-    """
+def read_file_bytes(path_str: str) -> bytes:
+    """레포 파일을 bytes로 읽어 캐시에 저장"""
+    return Path(path_str).read_bytes()
+
+@st.cache_data(show_spinner=True)
+def parse_sheet_from_bytes(excel_bytes: bytes, sheet_name: str, header_rows: int, skiprows: int) -> pd.DataFrame:
+    """엑셀 bytes → ExcelFile → 지정 시트 DataFrame 반환(직렬화 가능)"""
+    import openpyxl  # engine
+    xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
     hdr = list(range(header_rows)) if header_rows > 1 else 0
     df = xls.parse(sheet_name, header=hdr, skiprows=skiprows)
     return df
 
-# -------------------- 유틸 --------------------
+# -------------------- 파싱/정규화 유틸 --------------------
 def join_levels(t):
-    """MultiIndex tuple에서 None/Unnamed 제거하고 ' / '로 결합"""
     parts = [str(x) for x in t if pd.notna(x)]
     parts = [p for p in parts if not str(p).lower().startswith("unnamed")]
     return " / ".join(parts) if parts else ""
 
-def detect_month_cols(df):
-    """
-    열 이름(또는 MultiIndex)을 문자열로 만든 뒤 1~12 또는 '1월'~'12월'이 포함된 컬럼을 찾아
-    블록별로 그룹화: {block_label: [month_cols...]}
-    block_label은 상위 헤더(연도/시나리오 추정) 문자열.
-    """
+def detect_month_cols(df: pd.DataFrame):
     month_re = re.compile(r"^(\d{1,2})(?:월)?$")
     blocks = {}
     for col in df.columns:
-        # col 은 str 또는 tuple(MultiIndex)
-        if isinstance(col, tuple):
-            labels = [str(x) for x in col]
-        else:
-            labels = [str(col)]
-        # 맨 마지막 레벨에서 '월' 판단
-        last = labels[-1].replace(" ", "").replace("\n", "")
-        last = last.replace(".0","")
+        labels = list(col) if isinstance(col, tuple) else [str(col)]
+        last = str(labels[-1]).replace(" ", "").replace("\n", "").replace(".0", "")
         m = month_re.match(last)
         if m:
-            # 상위 레벨들을 block 라벨로 사용
             block_label = join_levels(labels[:-1]).strip()
             if not block_label:
-                # 상위가 비어있으면 전체 헤더 문자열을 block으로
                 block_label = join_levels(labels)
             blocks.setdefault(block_label, []).append(col)
-    # 월 순서 정렬(1~12)
+
     def month_key(c):
-        last = (c[-1] if isinstance(c, tuple) else c)
+        last = c[-1] if isinstance(c, tuple) else c
         s = str(last).replace("월", "")
         try:
             return int(float(s))
         except:
             return 99
+
     for k in list(blocks.keys()):
         blocks[k] = sorted(blocks[k], key=month_key)
     return blocks
 
 def extract_year_scenario(text: str):
-    """
-    '2024년 실적', '2025년 계획 Normal', '2025 계획 Best', '2026 계획' 등에서
-    (연도, 시나리오) 추정.
-    """
     y = None
     m = re.search(r"(20\d{2})", text)
     if m:
         y = int(m.group(1))
-    # 시나리오 키워드
     scn = "계획"
     if "실적" in text:
         scn = "실적"
@@ -111,58 +91,39 @@ def extract_year_scenario(text: str):
         scn = "계획"
     return y, scn
 
-def tidy_from_excel_table(df, hierarchy_cols, month_blocks):
-    """
-    df: 표 그대로 읽은 DataFrame(MultiIndex columns 가능)
-    hierarchy_cols: 왼쪽 구분/계층 열들(상위→하위 순서)
-    month_blocks: {block_label: [month_cols...]} from detect_month_cols
-    -> columns: 연도, 시나리오, 용도, 세부용도, 월, 공급량(㎥)
-    """
-    # 계층열 forward-fill
+def tidy_from_excel_table(df: pd.DataFrame, hierarchy_cols, month_blocks):
     hdf = df.copy()
     for c in hierarchy_cols:
         if c in hdf.columns:
             hdf[c] = hdf[c].ffill()
-    # '삭제 대상' 행 제거 옵션: 모두 NaN이거나 '합계' 전용 행은 유지(피벗에서 유용)
-    # melt 후 '소계/합계' 여부는 라벨로 사용 가능하게 둠
-    out_list = []
+
+    out = []
     for block, cols in month_blocks.items():
         y, scn = extract_year_scenario(block)
-        # 데이터 id_vars
         id_vars = [c for c in hierarchy_cols if c in hdf.columns]
         sub = hdf[id_vars + cols].copy()
-        # 와이드 → 롱
         msub = sub.melt(id_vars=id_vars, value_vars=cols, var_name="월열", value_name="공급량(㎥)")
-        # 월 변환
+
         def month_from_col(col):
             name = col[-1] if isinstance(col, tuple) else col
-            s = str(name)
-            s = s.replace("월", "").strip()
+            s = str(name).replace("월", "").strip()
             try:
                 return int(float(s))
             except:
                 return None
+
         msub["월"] = msub["월열"].map(month_from_col).astype("Int64")
         msub.drop(columns=["월열"], inplace=True)
-        # 기본 컬럼 생성
         msub["연도"] = y
         msub["시나리오"] = scn
-        # 용도 / 세부용도 추출: 가장 왼쪽=대분류, 가장 오른쪽=세부
-        if len(id_vars) >= 1:
-            msub["용도"] = msub[id_vars[0]].astype(str)
-        else:
-            msub["용도"] = "미지정"
-        if len(id_vars) >= 2:
-            msub["세부용도"] = msub[id_vars[-1]].astype(str)
-        else:
-            msub["세부용도"] = "합계"
-        out_list.append(msub)
-    tidy = pd.concat(out_list, ignore_index=True)
-    # 타입 및 정리
+        msub["용도"] = msub[id_vars[0]].astype(str) if len(id_vars) >= 1 else "미지정"
+        msub["세부용도"] = msub[id_vars[-1]].astype(str) if len(id_vars) >= 2 else "합계"
+        out.append(msub)
+
+    tidy = pd.concat(out, ignore_index=True)
     tidy["공급량(㎥)"] = pd.to_numeric(tidy["공급량(㎥)"], errors="coerce")
-    tidy = tidy.dropna(subset=["월","공급량(㎥)"])
-    # 문자열 트리밍
-    for c in ["용도","세부용도","시나리오"]:
+    tidy = tidy.dropna(subset=["월", "공급량(㎥)"])
+    for c in ["용도", "세부용도", "시나리오"]:
         tidy[c] = tidy[c].astype(str).str.strip()
     return tidy
 
@@ -203,66 +164,74 @@ if has_repo_files:
 source_options += ["엑셀 업로드(.xlsx)", "CSV 업로드(.csv)"]
 src = sb.radio("데이터 소스 선택", source_options, index=0)
 
-excelfile_obj = None
-raw_df = None
+excel_bytes = None
+csv_df = None
 sheet_name = None
 
 if src == "레포에 있는 파일 사용":
-    # 파일 선택
-    files = [(p.name, p) for p in repo_xlsx] + [(p.name, p) for p in repo_csv]
+    files = [(p.name, str(p)) for p in repo_xlsx] + [(p.name, str(p)) for p in repo_csv]
     idx = sb.selectbox("📁 레포 파일", options=list(range(len(files))), format_func=lambda i: files[i][0])
     fname, fpath = files[idx]
-    if str(fpath).lower().endswith(".xlsx"):
-        excelfile_obj = load_excel_bytes(str(fpath))
-        # 시트 선택
-        sheet_name = sb.selectbox("🗂 시트", options=excelfile_obj.sheet_names,
-                                  index=(excelfile_obj.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in excelfile_obj.sheet_names else 0))
+    if fname.lower().endswith(".xlsx"):
+        excel_bytes = read_file_bytes(fpath)  # bytes 캐시에 저장 OK
+        # 시트 목록 얻기 위해 임시 ExcelFile
+        import openpyxl
+        xls_tmp = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
+        sheet_name = sb.selectbox(
+            "🗂 시트",
+            options=xls_tmp.sheet_names,
+            index=(xls_tmp.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in xls_tmp.sheet_names else 0),
+        )
     else:
-        # CSV는 바로 로드
-        raw_df = pd.read_csv(str(fpath))
+        csv_df = pd.read_csv(fpath)
+
 elif src == "엑셀 업로드(.xlsx)":
     up = sb.file_uploader("엑셀 파일 업로드", type=["xlsx"])
     if up:
-        excelfile_obj = load_excel_bytes(up.getvalue())
-        sheet_name = sb.selectbox("🗂 시트", options=excelfile_obj.sheet_names,
-                                  index=(excelfile_obj.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in excelfile_obj.sheet_names else 0))
-else:  # CSV
+        excel_bytes = up.getvalue()
+        import openpyxl
+        xls_tmp = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
+        sheet_name = sb.selectbox(
+            "🗂 시트",
+            options=xls_tmp.sheet_names,
+            index=(xls_tmp.sheet_names.index("3-2 공급량상세") if "3-2 공급량상세" in xls_tmp.sheet_names else 0),
+        )
+
+else:  # CSV 업로드
     upc = sb.file_uploader("CSV 업로드", type=["csv"])
     if upc:
-        raw_df = pd.read_csv(io.BytesIO(upc.getvalue()))
+        csv_df = pd.read_csv(io.BytesIO(upc.getvalue()))
 
-if excelfile_obj is None and raw_df is None:
-    st.info("좌측에서 파일/시트를 선택하면 미리보기가 표시됩니다.")
+if excel_bytes is None and csv_df is None:
+    st.info("좌측에서 **데이터 소스 선택 → 파일/시트**를 지정하세요.")
     st.stop()
 
 # -------------------- 엑셀 표 파싱 옵션 --------------------
-if excelfile_obj is not None:
+if excel_bytes is not None:
     sb.markdown("---")
     sb.subheader("⚙️ 엑셀 표 파싱 옵션")
     header_rows = sb.number_input("헤더 행 수(병합 제목 포함)", min_value=1, max_value=4, value=2, step=1)
     skiprows = sb.number_input("헤더 시작 전 건너뛸 행 수", min_value=0, max_value=50, value=0, step=1)
-    excel_view = parse_sheet(excelfile_obj, sheet_name, header_rows=int(header_rows), skiprows=int(skiprows))
+
+    excel_view = parse_sheet_from_bytes(excel_bytes, sheet_name, int(header_rows), int(skiprows))
     st.subheader("엑셀 표(그대로 보기)")
     st.dataframe(excel_view, use_container_width=True)
 
-    # 계층(구분) 열·월 블록 자동 탐지 & 선택
-    # 후보: 문자열/Unnamed가 아닌 왼쪽 몇 열
-    col_candidates = [c for c in excel_view.columns if (isinstance(c, tuple) and not str(c[0]).lower().startswith("unnamed")) or (isinstance(c, str) and not c.lower().startswith("unnamed"))]
-    # 왼쪽 일부만 기본 선택
+    # 계층 후보 자동 추천
     default_hierarchy = []
     for c in excel_view.columns[:5]:
         if (isinstance(c, tuple) and any(pd.notna(x) for x in c) and not str(c[-1]).strip().endswith("월")) or (isinstance(c, str) and "월" not in c):
             default_hierarchy.append(c)
-    sb.subheader("🧭 매핑(왼쪽 구분/계층 열, 월 열)")
-    hierarchy_cols = sb.multiselect("계층(구분) 열 선택(상위→하위, 1~3개 추천)", options=list(excel_view.columns), default=default_hierarchy)
-    month_blocks = detect_month_cols(excel_view)
 
-    # 월 블록 미리보기
-    if month_blocks:
-        sb.caption("인식된 시나리오 블록:")
-        for k, v in month_blocks.items():
-            sb.write(f"- **{k}** → {len(v)}개월")
-    else:
+    sb.subheader("🧭 매핑(왼쪽 구분/계층 열, 월 열 자동감지)")
+    hierarchy_cols = sb.multiselect(
+        "계층(구분) 열 선택(상위→하위, 1~3개 추천)",
+        options=list(excel_view.columns),
+        default=default_hierarchy
+    )
+
+    month_blocks = detect_month_cols(excel_view)
+    if not month_blocks:
         st.warning("월(1~12/1월~12월) 열을 찾지 못했습니다. 헤더 행 수/건너뛸 행을 조정하세요.")
         st.stop()
 
@@ -270,24 +239,21 @@ if excelfile_obj is not None:
     tidy = tidy_from_excel_table(excel_view, hierarchy_cols=hierarchy_cols, month_blocks=month_blocks)
 
 else:
-    # CSV는 기존 방식 매핑으로 처리(롱형식 가정)
+    # CSV 경로: 이미 롱형식이라고 가정
     st.subheader("CSV 미리보기")
-    st.dataframe(raw_df.head(30), use_container_width=True)
-    guess_cols = raw_df.columns.tolist()
-    st.info("CSV는 연도/시나리오/용도/세부용도/월/공급량(㎥) 컬럼을 포함하는 롱형식을 권장합니다.")
-    tidy = raw_df.rename(columns={"값":"공급량(㎥)"})
+    st.dataframe(csv_df.head(30), use_container_width=True)
+    tidy = csv_df.rename(columns={"값": "공급량(㎥)"})
     if "공급량(㎥)" not in tidy.columns:
         st.stop()
 
-# -------------------- 정규화 결과 확인 --------------------
+# -------------------- 정규화 결과 --------------------
 if tidy.empty:
-    st.warning("정규화 결과가 비어 있습니다. 파싱 옵션과 매핑을 조정하세요.")
+    st.warning("정규화 결과가 비어 있습니다. 파싱 옵션을 조정하세요.")
     st.stop()
 
-# 합성 키
 tidy["연도/시나리오"] = tidy["연도"].astype("Int64").astype(str) + "·" + tidy["시나리오"].astype(str)
 
-st.subheader("정규화 데이터(요약용)")
+st.subheader("정규화 데이터(표준형)")
 st.dataframe(tidy.head(50), use_container_width=True)
 
 # -------------------- 필터 --------------------
@@ -298,7 +264,6 @@ with f1:
     sel_years = st.multiselect("연도", years, default=years)
 with f2:
     scns = tidy["시나리오"].dropna().unique().tolist()
-    # 시나리오 표시 순서 고정
     order = ["실적","Normal","Best","Conservative","계획"]
     ordered = [s for s in order if s in scns] + [s for s in scns if s not in order]
     sel_scns = st.multiselect("시나리오/계획", ordered, default=ordered)
@@ -308,7 +273,7 @@ with f3:
 
 view = tidy.query("연도 in @sel_years and 시나리오 in @sel_scns").copy()
 
-# -------------------- 출력: 요약표 + 그래프 --------------------
+# -------------------- 출력 --------------------
 yearly = (view.groupby(["연도/시나리오","용도"], as_index=False)["공급량(㎥)"]
           .sum()
           .sort_values(["연도/시나리오","용도"]))
