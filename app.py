@@ -145,14 +145,20 @@ def make_pivot_table(tidy: pd.DataFrame,
     return pivot
 
 def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    fmt = {c: "{:,.0f}" for c in pivot.columns}
-    styler = pivot.style.format(fmt, na_rep="0")
+    # Styler 쪽 버그를 피하려고 인덱스를 문자열로 강제
+    p = pivot.copy()
+    p.index = p.index.astype(str)
+
+    fmt = {c: "{:,.0f}" for c in p.columns}
+    styler = p.style.format(fmt, na_rep="0")
+
     # 소계/합계 하이라이트
     def highlight(row):
         name = str(row.name)
         if ("소계" in name) or (name == "합계"):
             return ["background-color: rgba(0,0,0,0.06)"] * len(row)
         return ["" for _ in row]
+
     styler = styler.apply(highlight, axis=1)
     return styler
 
@@ -225,7 +231,22 @@ for tab, sn in zip(scenario, scenario_names):
             with yt:
                 sub = tidy.query("연 == @year")
                 pivot = make_pivot_table(sub, item_order=preferred_order)
-                st.dataframe(style_table(pivot), use_container_width=True)
+                def _safe_show_table(df: pd.DataFrame, *, key: str = ""):
+    """Styler가 실패하면 문자열 포맷 DF로 폴백."""
+    try:
+        st.dataframe(style_table(df), use_container_width=True, key=f"sty_{key}")
+    except Exception:
+        # 천단위 쉼표 문자열 포맷으로 변환해 일반 DF 표출
+        df_str = df.copy()
+        for c in df_str.columns:
+            df_str[c] = pd.to_numeric(df_str[c], errors="coerce").fillna(0).round(0).astype(int)
+            df_str[c] = df_str[c].map(lambda x: format(x, ","))
+        # 합계 행은 굵게 효과 대신 그대로 표출
+        st.dataframe(df_str, use_container_width=True, key=f"plain_{key}")
+
+# ... (연도 탭 루프 안)
+_safe_show_table(pivot, key=f"{sn}_{year}")
+
 
         st.markdown("---")
         st.subheader("월별 추이 그래프")
