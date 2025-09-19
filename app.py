@@ -1,8 +1,9 @@
 # app.py — 공급량 실적 및 계획 상세
-# - 데이터 소스: 리포 파일 기본 사용(사업계획최종.xlsx) / 업로드 선택
+# - 데이터 소스: 리포 파일 기본 사용(사업계획최종.xlsx) / 엑셀 업로드(.xlsx)
 # - 자동 매핑(연/월/용도), 에폭(ns/ms/s)·datetime 안전 처리
-# - 한글 폰트 적용(리포 fonts/NanumGothic-Regular.ttf)
-# - 표(구분/세부 × 1~12월 + 합계), 소계/합계, 그래프, CSV 다운로드
+# - 한글 폰트 적용(리포 루트 또는 fonts/ 폴더)
+# - 표(구분/세부 × 1~12월 + 합계), 소계/합계(숫자만 합산), 그래프, CSV 다운로드
+# - 연도 선택: 본문 상단 라디오 버튼(클릭 즉시 반영)
 
 import io, os, re, unicodedata
 import numpy as np
@@ -13,13 +14,14 @@ import streamlit as st
 from pandas.api.types import is_datetime64_any_dtype as is_dt, is_integer_dtype
 
 # ───────── 사용자 설정 ─────────
-DEFAULT_REPO_FILE = "사업계획최종.xlsx"  # 리포 루트에 있는 기본 파일
+DEFAULT_REPO_FILE = "사업계획최종.xlsx"  # 리포 루트 기본 파일
 
 # ───────── 폰트 설정 ─────────
 def set_korean_font():
     import matplotlib.font_manager as fm
     candidates = [
-        ("fonts/NanumGothic-Regular.ttf", "NanumGothic"),
+        ("NanumGothic-Regular.ttf", "NanumGothic"),                  # 리포 루트
+        ("fonts/NanumGothic-Regular.ttf", "NanumGothic"),            # 리포 /fonts
         ("fonts/NanumGothic.ttf", "NanumGothic"),
         ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf", "NanumGothic"),
         ("C:/Windows/Fonts/malgun.ttf", "Malgun Gothic"),
@@ -27,7 +29,10 @@ def set_korean_font():
     ]
     for path, name in candidates:
         if os.path.exists(path):
-            fm.fontManager.addfont(path)
+            try:
+                fm.fontManager.addfont(path)
+            except Exception:
+                pass
             mpl.rcParams["font.family"] = name
             mpl.rcParams["axes.unicode_minus"] = False
             return
@@ -44,19 +49,25 @@ ROWS_SPEC = [
     ("가정용", "개별난방"),
     ("가정용", "중앙난방"),
     ("가정용", "소계"),
+
     ("영업용", "일반용1"),
+
     ("업무용", "일반용2"),
     ("업무용", "냉난방용"),
     ("업무용", "주택미급"),
     ("업무용", "소계"),
+
     ("산업용", "합계"),
     ("열병합", "합계"),
     ("연료전지", "합계"),
     ("자가열병합", "합계"),
     ("열전용설비용", "합계"),
+
     ("CNG", "합계"),
+
     ("수송용", "BIO"),
     ("수송용", "소계"),
+
     ("합계", ""),
 ]
 MONTH_COLS = [f"{m}월" for m in range(1, 13)]
@@ -107,6 +118,7 @@ def best_match(colnames, candidates):
 
 def auto_map_usage_columns(cols):
     return {k: best_match(cols, v) for k, v in SYN.items()}
+
 def detect_year_col(cols):  return best_match(cols, YEAR_HINTS)
 def detect_month_col(cols): return best_match(cols, MONTH_HINTS)
 def detect_date_col(cols):  return best_match(cols, DATE_HINTS)
@@ -114,20 +126,36 @@ def detect_date_col(cols):  return best_match(cols, DATE_HINTS)
 # ───────── 소계/합계 & 스타일 ─────────
 def calc_subtotals(table: pd.DataFrame) -> pd.DataFrame:
     t = table.copy()
-    m = (t["구분"]=="가정용") & (t["세부"]=="소계")
+
+    def sum_numeric(mask, col):
+        # 숫자만 합산 (datetime/문자 섞여도 안전)
+        return pd.to_numeric(t.loc[mask, col], errors="coerce").sum()
+
+    # 가정용 소계
+    m_sc = (t["구분"]=="가정용") & (t["세부"]=="소계")
     for c in MONTH_COLS:
-        t.loc[m, c] = t.loc[(t["구분"]=="가정용") & (t["세부"].isin(["취사용","개별난방","중앙난방"])), c].sum()
-    m = (t["구분"]=="업무용") & (t["세부"]=="소계")
+        m_body = (t["구분"]=="가정용") & (t["세부"].isin(["취사용","개별난방","중앙난방"]))
+        t.loc[m_sc, c] = sum_numeric(m_body, c)
+
+    # 업무용 소계
+    m_sc = (t["구분"]=="업무용") & (t["세부"]=="소계")
     for c in MONTH_COLS:
-        t.loc[m, c] = t.loc[(t["구분"]=="업무용") & (t["세부"].isin(["일반용2","냉난방용","주택미급"])), c].sum()
-    m = (t["구분"]=="수송용") & (t["세부"]=="소계")
+        m_body = (t["구분"]=="업무용") & (t["세부"].isin(["일반용2","냉난방용","주택미급"]))
+        t.loc[m_sc, c] = sum_numeric(m_body, c)
+
+    # 수송용 소계 = BIO
+    m_sc = (t["구분"]=="수송용") & (t["세부"]=="소계")
     for c in MONTH_COLS:
-        t.loc[m, c] = t.loc[(t["구분"]=="수송용") & (t["세부"]=="BIO"), c].sum()
-    body = (t["구분"]!="합계") & t["세부"].ne("소계") & t["세부"].ne("합계")
-    m = (t["구분"]=="합계")
+        m_body = (t["구분"]=="수송용") & (t["세부"]=="BIO")
+        t.loc[m_sc, c] = sum_numeric(m_body, c)
+
+    # 전체 합계(소계/합계 제외)
+    m_total = (t["구분"]=="합계")
+    m_body = (t["구분"]!="합계") & t["세부"].ne("소계") & t["세부"].ne("합계")
     for c in MONTH_COLS:
-        t.loc[m, c] = t.loc[body, c].sum()
-    t["합계"] = t[MONTH_COLS].sum(axis=1, min_count=1)
+        t.loc[m_total, c] = sum_numeric(m_body, c)
+
+    t["합계"] = t[MONTH_COLS].apply(pd.to_numeric, errors="coerce").sum(axis=1, min_count=1)
     return t
 
 def highlight_rows(df: pd.DataFrame):
@@ -209,12 +237,23 @@ with sb.expander("자동 매핑 결과(필요 시 수정)", expanded=False):
         opts = [auto_map[k]] + [c for c in df.columns if c != auto_map[k]] if auto_map[k] else list(df.columns)
         auto_map[k] = st.selectbox(k, opts, key=f"map_{k}")
 
+# ───────── 연도 라디오 (본문 상단) ─────────
 years = sorted(df["_연도_"].dropna().unique().tolist())
-sel_year = sb.selectbox("연도 선택", years, index=(years.index(2024) if 2024 in years else 0))
+st.subheader("연도 선택")
+year_choice = st.radio(
+    "", years,
+    index=(years.index(2024) if 2024 in years else 0),
+    horizontal=True,
+    label_visibility="collapsed",
+)
+sel_year = int(year_choice)
 
 # ───────── 집계 ─────────
 def monthly_sum(df, year, col):
     sub = df.loc[df["_연도_"]==year, ["_월_", col]].copy()
+    # 대상 열이 datetime이면 숫자로 합산하지 않도록 우회
+    if is_dt(sub[col]):
+        sub[col] = pd.NaT
     sub[col] = pd.to_numeric(sub[col], errors="coerce")
     s = sub.groupby("_월_")[col].sum(min_count=1)
     out = pd.Series(index=range(1,13), dtype="float64"); out.update(s)
@@ -252,7 +291,7 @@ def monthly_series(selection):
         mask = filled["구분"].ne("합계") & filled["세부"].ne("소계") & filled["세부"].ne("합계")
     else:
         mask = (filled["구분"]==selection) & filled["세부"].ne("소계") & filled["세부"].ne("합계")
-    s = filled.loc[mask, MONTH_COLS].sum(numeric_only=True)
+    s = filled.loc[mask, MONTH_COLS].apply(pd.to_numeric, errors="coerce").sum(numeric_only=True)
     xs = list(range(1,13)); ys = [float(s.get(f"{m}월",0.0)) for m in xs]
     return xs, ys
 
