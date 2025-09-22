@@ -1,14 +1,16 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
-# 변경 요약:
-#  • 표의 그룹(용도) 및 세부 항목 순서를 엑셀의 "열 등장 순서"로 정확히 정렬
-#  • 그룹별 소계(예: 가정용/소계)와 전체 합계 자동 생성 + 하이라이트
-#  • 그래프는 선택한 그룹만 표시, 예측(2025-11~) 점선
+# 변경 요약
+#  • 엑셀 헤더가 '그룹_세부' / '그룹/세부' / '그룹 세부'여도 자동 인식
+#  • 표의 행(구분/세부) 순서를 엑셀 "열 등장 순서"와 동일하게 정렬
+#  • 각 그룹 소계 자동 생성(없으면) + 소계/합계 하이라이트
+#  • 그래프는 선택한 그룹만 표시, 2025-11 이후/연>2025는 점선(예측)
 
 import io
+import re
 import unicodedata
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -39,7 +41,14 @@ DEFAULT_XLSX = "사업계획최종.xlsx"
 DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
 PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 '예측'으로 표기
 
-# 열 이름 → (구분, 세부)
+# 인지 가능한 그룹명
+GROUP_NAMES = [
+    "가정용", "영업용", "업무용", "산업용",
+    "열병합", "연료전지", "자가열전용", "열전용설비용",
+    "CNG", "수송용", "합계"
+]
+
+# 열 이름 → (구분, 세부) : 정확 일치 매핑
 COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     # 가정용
     "취사용": ("가정용", "취사용"),
@@ -49,6 +58,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "가정용소계(합계)": ("가정용", "소계"),
     "가정용 소계": ("가정용", "소계"),
     "소계(가정용)": ("가정용", "소계"),
+
     # 영업/업무/산업 등
     "일반용": ("영업용", "일반용"),
     "일반용1": ("영업용", "일반용1"),
@@ -57,19 +67,22 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "냉난방": ("업무용", "냉난방용"),
     "냉난방용": ("업무용", "냉난방용"),
     "주한미군": ("업무용", "주한미군"),
-    "소계": ("업무용", "소계"),  # 일부 시트에서 '소계'가 업무용 소계로 들어오는 케이스 대응
+    "소계": ("업무용", "소계"),  # 시트에 '소계'로만 들어오는 경우가 있어 업무용 소계로 처리
     "산업용": ("산업용", "합계"),
-    # 기타
+
+    # 기타 에너지
     "열병합": ("열병합", "합계"),
     "연료전지": ("연료전지", "합계"),
     "자가열전용": ("자가열전용", "합계"),
     "자가열병합": ("자가열전용", "합계"),
     "열전용설비용": ("열전용설비용", "합계"),
     "CNG": ("CNG", "합계"),
+
     # 수송용
     "BIO": ("수송용", "BIO"),
     "수송용소계": ("수송용", "소계"),
     "수송용 소계": ("수송용", "소계"),
+
     # 최종 합계
     "합계": ("합계", "합계"),
 }
@@ -84,7 +97,44 @@ SCENARIOS = ["데이터", "best", "conservative"]
 def normalize_col(s: str) -> str:
     if not isinstance(s, str):
         return s
-    return unicodedata.normalize("NFC", s).strip().replace(" ", "")
+    return unicodedata.normalize("NFC", s).strip()
+
+def simplify_key(s: str) -> str:
+    """공백 제거 + 소문자(영문) + 특수기호 최소화하여 키 비교용 간소화"""
+    s = normalize_col(s)
+    return re.sub(r"[\s/,_\-]+", "", s).lower()
+
+def parse_column_name(raw_name: str) -> Optional[Tuple[str, str]]:
+    """
+    엑셀 헤더를 (구분, 세부)로 파싱.
+    1) COL_TO_GROUP에 간소키가 일치하면 매핑
+    2) '그룹_세부' / '그룹/세부' / '그룹 세부' 형태 자동 파싱
+    """
+    n = normalize_col(raw_name)
+    key = simplify_key(n)
+
+    # 1) 정확/간소 키 매핑
+    for k, (g, s) in COL_TO_GROUP.items():
+        if simplify_key(k) == key:
+            return (g, s)
+
+    # 2) '그룹{구분자}세부' 패턴
+    m = re.split(r"[/,_\-\s]+", n)  # 공백/슬래시/언더스코어/하이픈 모두 허용
+    if len(m) >= 2:
+        g_cand = m[0]
+        s_cand = "".join(m[1:]) if len(m) > 2 else m[1]
+        # 그룹명 후보가 GROUP_NAMES 중 하나이면 채택
+        if g_cand in GROUP_NAMES:
+            return (g_cand, s_cand)
+
+    # 3) '그룹세부' 붙은 형태: 그룹명으로 시작하면 분리
+    for g in GROUP_NAMES:
+        if n.startswith(g):
+            rest = n[len(g):].strip()
+            if rest:
+                return (g, rest)
+
+    return None  # 매핑 불가
 
 @st.cache_data(show_spinner=False)
 def read_excel_all_sheets(content: bytes) -> Dict[str, pd.DataFrame]:
@@ -92,16 +142,16 @@ def read_excel_all_sheets(content: bytes) -> Dict[str, pd.DataFrame]:
     out: Dict[str, pd.DataFrame] = {}
     for sn in xls.sheet_names:
         df = xls.parse(sn)
+        # 원본 헤더 보존 + 정규화 버전 추가
         df.columns = [normalize_col(str(c)) for c in df.columns]
         out[sn] = df
     return out
 
-def detect_date_col(df: pd.DataFrame) -> str | None:
+def detect_date_col(df: pd.DataFrame) -> Optional[str]:
     cols = [normalize_col(str(c)) for c in df.columns]
     for c in DATE_COL_CANDIDATES:
-        n = normalize_col(c)
-        if n in cols:
-            return n
+        if normalize_col(c) in cols:
+            return normalize_col(c)
     for c in df.columns:
         if np.issubdtype(df[c].dtype, np.datetime64):
             return normalize_col(str(c))
@@ -110,20 +160,17 @@ def detect_date_col(df: pd.DataFrame) -> str | None:
 def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
     """'일자'가 있으면 연/월을 항상 일자에서 재계산하여 덮어씀(불일치 자동 교정)."""
     out = df.copy()
-    colmap = {c: normalize_col(str(c)) for c in out.columns}
-    out.rename(columns=colmap, inplace=True)
-
-    date_col = detect_date_col(out)
     mismatch_cnt = 0
+    date_col = detect_date_col(out)
 
     if date_col and date_col in out.columns:
         out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
         y = out[date_col].dt.year.astype("Int64")
         m = out[date_col].dt.month.astype("Int64")
         if "연" in out.columns:
-            mismatch_cnt += int(((out["연"].astype("Int64") != y) & y.notna()).sum())
+            mismatch_cnt += int(((pd.to_numeric(out["연"], errors="coerce").astype("Int64") != y) & y.notna()).sum())
         if "월" in out.columns:
-            mismatch_cnt += int(((out["월"].astype("Int64") != m) & m.notna()).sum())
+            mismatch_cnt += int(((pd.to_numeric(out["월"], errors="coerce").astype("Int64") != m) & m.notna()).sum())
         out["연"], out["월"] = y, m
     else:
         if "연" in out.columns:
@@ -137,16 +184,15 @@ def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
 def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
     """
     엑셀 '열 등장 순서'를 (구분,세부) 쌍 리스트로 반환.
+    COL_TO_GROUP 또는 '그룹_세부' 등 패턴으로 파싱 가능한 열만 포함.
     """
     pairs: List[Tuple[str, str]] = []
     seen = set()
     for c in raw_df.columns:
-        n = normalize_col(str(c))
-        if n in COL_TO_GROUP:
-            pair = COL_TO_GROUP[n]
-            if pair not in seen:
-                pairs.append(pair)
-                seen.add(pair)
+        parsed = parse_column_name(str(c))
+        if parsed and parsed not in seen:
+            pairs.append(parsed)
+            seen.add(parsed)
     return pairs
 
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
@@ -154,11 +200,12 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     if ("연" not in df.columns) or ("월" not in df.columns):
         return pd.DataFrame(columns=["구분","세부","연","월","값"])
 
-    key_map = {}
+    key_map: Dict[str, Tuple[str, str]] = {}
     for raw_col in df.columns:
-        n = normalize_col(str(raw_col))
-        if n in COL_TO_GROUP:
-            key_map[raw_col] = COL_TO_GROUP[n]
+        parsed = parse_column_name(str(raw_col))
+        if parsed:
+            key_map[raw_col] = parsed
+
     if not key_map:
         return pd.DataFrame(columns=["구분","세부","연","월","값"])
 
@@ -197,6 +244,7 @@ def add_subtotals_and_total(pv: pd.DataFrame) -> pd.DataFrame:
         total_row = pv2.sum(axis=0)
         total_row.name = ("합계", "합계")
         pv2 = pd.concat([pv2, total_row.to_frame().T])
+
     return pv2
 
 def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
@@ -212,12 +260,12 @@ def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]
     # ① 그룹 순서: order_pairs에서 등장한 그룹의 최초 등장 순서
     group_order: List[str] = []
     seen_g = set()
-    for g, s in order_pairs:
-        if g not in seen_g:
+    for g, _ in order_pairs:
+        if g not in seen_g and g != "합계":
             group_order.append(g)
             seen_g.add(g)
 
-    # order_pairs에 없지만 pivot에 존재하는 그룹은 뒤에 붙임
+    # order_pairs에 없지만 pivot에 존재하는 그룹은 뒤에 붙임(합계 제외)
     existing_groups = list({idx[0] for idx in pv.index})
     for g in existing_groups:
         if g not in seen_g and g != "합계":
@@ -226,15 +274,13 @@ def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]
     # ② 그룹별 세부 항목 순서
     result_index: List[Tuple[str, str]] = []
     for g in group_order:
-        # 이 그룹의 order_pairs에서의 세부 순서(소계 제외)
         ordered_details = [s for (gg, s) in order_pairs if gg == g and s != "소계"]
-        # pivot에 실제 존재하는 세부들
         exist_details = [idx[1] for idx in pv.index if idx[0] == g and idx[1] not in ("소계", "합계")]
-        # ordered_details 중 존재하는 것 → 남은 존재항목(정렬에 없던 것)
+        # 순서 구성: 엑셀에 나온 순서 → 그 외 존재 항목
         ordered = [(g, s) for s in ordered_details if s in exist_details]
         remain  = [(g, s) for s in exist_details if s not in ordered_details]
         result_index.extend(ordered + remain)
-        # 소계는 마지막
+        # 소계는 그룹 말미
         if (g, "소계") in pv.index:
             result_index.append((g, "소계"))
 
@@ -335,7 +381,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
-        order_pairs = sheet_column_order_pairs(raw)  # ← 엑셀 열 순서 반영
+        order_pairs = sheet_column_order_pairs(raw)  # 엑셀 열 순서 반영
         long_df = to_long(raw)
 
         fixed = int(long_df.attrs.get("year_month_mismatch_fixed", 0))
