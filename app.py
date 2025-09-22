@@ -1,10 +1,9 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
-# 핵심 변경
-# 1) 표의 행 순서를 엑셀 시트의 "열(column) 등장 순서"에 맞게 재배열
-# 2) 각 그룹(가정용/영업용/업무용/… )의 '소계'를 자동 생성하여 표에 표시
-# 3) 소계/합계 행은 하이라이트
-# 4) 그래프는 "선택한 그룹만" 표시, 예측(2025-11~/연>2025)은 점선
+# 변경 요약:
+#  • 표의 그룹(용도) 및 세부 항목 순서를 엑셀의 "열 등장 순서"로 정확히 정렬
+#  • 그룹별 소계(예: 가정용/소계)와 전체 합계 자동 생성 + 하이라이트
+#  • 그래프는 선택한 그룹만 표시, 예측(2025-11~) 점선
 
 import io
 import unicodedata
@@ -137,8 +136,7 @@ def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
 
 def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
     """
-    엑셀 '열 등장 순서'를 (구분,세부) 쌍의 리스트로 반환.
-    매핑(COL_TO_GROUP)에 포함된 열만 수집하며, 중복은 제거.
+    엑셀 '열 등장 순서'를 (구분,세부) 쌍 리스트로 반환.
     """
     pairs: List[Tuple[str, str]] = []
     seen = set()
@@ -183,13 +181,9 @@ def add_subtotals_and_total(pv: pd.DataFrame) -> pd.DataFrame:
     """각 그룹별 '소계'가 없으면 생성해 추가하고, 마지막에 전체 합계(합계/합계)도 추가."""
     if pv.empty:
         return pv
-
-    # 기존 인덱스 유지
     pv2 = pv.copy()
-
     groups = sorted(set([idx[0] for idx in pv2.index]))
     for g in groups:
-        # 이미 소계가 있으면 건너뜀
         if (g, "소계") in pv2.index:
             continue
         rows = [idx for idx in pv2.index if idx[0] == g and idx[1] not in ("소계", "합계")]
@@ -199,45 +193,57 @@ def add_subtotals_and_total(pv: pd.DataFrame) -> pd.DataFrame:
         subtotal.name = (g, "소계")
         pv2 = pd.concat([pv2, subtotal.to_frame().T])
 
-    # 전체 합계
     if ("합계", "합계") not in pv2.index:
         total_row = pv2.sum(axis=0)
         total_row.name = ("합계", "합계")
         pv2 = pd.concat([pv2, total_row.to_frame().T])
-
     return pv2
 
 def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    """엑셀 열 순서(order_pairs)에 맞게 (구분,세부) 인덱스를 재배열. 소계는 각 그룹의 마지막에 위치."""
+    """
+    엑셀 '열 등장 순서'를 기준으로
+    1) 그룹(용도)의 순서를 정하고,
+    2) 각 그룹 내 세부 항목도 같은 순서로 배치,
+    3) 각 그룹의 소계는 말미, 마지막에 전체 합계.
+    """
     if pv.empty:
         return pv
-    # 그룹별로 원소 나열 후 소계/합계 위치 조정
-    result_index: List[Tuple[str, str]] = []
-    groups = {}
-    for (g, s) in pv.index:
-        groups.setdefault(g, []).append((g, s))
 
-    # 우선순위: order_pairs 등장 순서 → 같은 그룹의 항목들 순서
-    # order_pairs에 없는 항목은 뒤쪽에 붙임
-    for g in groups.keys():
-        # 이 그룹의 세부 항목 중 '소계'를 제외한 순서 리스트
-        items = [p for p in order_pairs if p[0] == g and p in groups[g] and p[1] != "소계"]
-        # order_pairs에 없지만 존재하는 항목(소계 제외)
-        remain = [p for p in groups[g] if p[1] != "소계" and p not in items and p[1] != "합계"]
-        ordered = items + remain
-        result_index.extend(ordered)
+    # ① 그룹 순서: order_pairs에서 등장한 그룹의 최초 등장 순서
+    group_order: List[str] = []
+    seen_g = set()
+    for g, s in order_pairs:
+        if g not in seen_g:
+            group_order.append(g)
+            seen_g.add(g)
+
+    # order_pairs에 없지만 pivot에 존재하는 그룹은 뒤에 붙임
+    existing_groups = list({idx[0] for idx in pv.index})
+    for g in existing_groups:
+        if g not in seen_g and g != "합계":
+            group_order.append(g)
+
+    # ② 그룹별 세부 항목 순서
+    result_index: List[Tuple[str, str]] = []
+    for g in group_order:
+        # 이 그룹의 order_pairs에서의 세부 순서(소계 제외)
+        ordered_details = [s for (gg, s) in order_pairs if gg == g and s != "소계"]
+        # pivot에 실제 존재하는 세부들
+        exist_details = [idx[1] for idx in pv.index if idx[0] == g and idx[1] not in ("소계", "합계")]
+        # ordered_details 중 존재하는 것 → 남은 존재항목(정렬에 없던 것)
+        ordered = [(g, s) for s in ordered_details if s in exist_details]
+        remain  = [(g, s) for s in exist_details if s not in ordered_details]
+        result_index.extend(ordered + remain)
         # 소계는 마지막
-        if (g, "소계") in groups[g]:
+        if (g, "소계") in pv.index:
             result_index.append((g, "소계"))
 
-    # 맨 마지막에 전체 합계
+    # ③ 전체 합계는 맨 마지막
     if ("합계", "합계") in pv.index:
-        result_index = [p for p in result_index if p != ("합계", "합계")]
         result_index.append(("합계", "합계"))
 
-    # 중복/누락 보정
+    # ④ 중복/누락 보정
     result_index = [p for p in result_index if p in pv.index]
-    # 남은 항목이 있으면 뒤에 붙임
     for idx in pv.index:
         if idx not in result_index:
             result_index.append(idx)
@@ -262,28 +268,22 @@ def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, st
     pv.columns.name = ""
     pv["합계"] = pv.sum(axis=1)
 
-    # 1) 그룹 소계/전체 합계 추가
     pv = add_subtotals_and_total(pv)
-    # 2) 엑셀 열 순서대로 재배열(+ 각 그룹 소계는 말미)
     pv = reorder_by_sheet_columns(pv, order_pairs)
-
     return pv
 
 def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
     p = pivot.copy()
-    # 인덱스 표시를 "구분 / 세부"로
     p.index = p.index.map(lambda t: " / ".join(map(str, t)) if isinstance(t, tuple) else str(t))
     styler = p.style.format({c: "{:,.0f}" for c in p.columns}, na_rep="0")
 
     def highlight(row):
         name = str(row.name)
-        # ' / 소계' 또는 '합계'는 하이라이트
-        if name.endswith(" / 소계") or (name == "합계 / 합계") or name.endswith("합계"):
+        if name.endswith(" / 소계") or name.endswith("합계"):
             return ["background-color: rgba(0,0,0,0.10)"] * len(row)
         return ["" for _ in row]
 
-    styler = styler.apply(highlight, axis=1)
-    return styler
+    return styler.apply(highlight, axis=1)
 
 def show_table(df: pd.DataFrame, key: str):
     try:
@@ -335,12 +335,9 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
-        # 엑셀 컬럼 순서 보존용 쌍 리스트
-        order_pairs = sheet_column_order_pairs(raw)
-        # 롱포맷
+        order_pairs = sheet_column_order_pairs(raw)  # ← 엑셀 열 순서 반영
         long_df = to_long(raw)
 
-        # 불일치 자동 교정 안내
         fixed = int(long_df.attrs.get("year_month_mismatch_fixed", 0))
         if fixed > 0:
             st.caption(f"'일자' 기준으로 연/월 불일치 {fixed}건을 자동 교정함.")
@@ -362,7 +359,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
                                          default="총량", key=f"grp_{sn}")
 
-        # 선택 연도 + '합계' 구분 제외(이중집계 방지)
+        # 선택 연도 + '합계' 구분 제외
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
         plot_base = plot_base[plot_base["구분"] != "합계"]
 
@@ -381,7 +378,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             )
             plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
 
-        # 예측/실적 라벨링(2025-11 이후, 또는 연>2025는 예측)
+        # 예측/실적 라벨링
         if not plot_df.empty:
             ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
             plot_df["예측"] = np.where(
@@ -397,7 +394,7 @@ for sn, tab in zip(SCENARIOS, scenario):
                 x="월",
                 y="값",
                 color="라벨",
-                line_dash="예측",                     # 실선/점선
+                line_dash="예측",
                 category_orders={"예측": ["실적","예측"]},
                 line_dash_map={"실적": "solid", "예측": "dash"},
                 markers=True,
