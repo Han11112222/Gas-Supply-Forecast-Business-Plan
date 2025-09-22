@@ -1,10 +1,9 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
 # 변경 요약:
-#  • 예측 시작: 2025-11부터 예측(점선), 이전은 실적(실선)
-#  • '일자'가 있으면 연/월을 항상 일자에서 재계산(불일치 자동 교정)
-#  • '합계 포함' 토글 제거(시트 내 '합계' 구분은 기본 제외)
-#  • '총량' 라인은 항상 계산하여 표시(총량만/그룹+총량 비교)
+#  • 그래프에 "선택한 그룹만" 표시(총량은 오직 총량 선택 시에만)
+#  • 예측 시작: 2025-11부터 예측(점선)
+#  • '일자' 존재 시 연/월을 항상 일자에서 재계산(불일치 자동 교정)
 
 import io
 import unicodedata
@@ -38,9 +37,7 @@ st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide
 # ─────────────────────────────────────────────────────────
 DEFAULT_XLSX = "사업계획최종.xlsx"
 DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
-
-# 예측 시작 기준(이 월부터 '예측'으로 표기)
-PREDICT_START = {"year": 2025, "month": 11}
+PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 '예측'으로 표기
 
 # 열 이름 → (구분, 세부)
 COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
@@ -79,7 +76,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
 }
 
 MONTHS = list(range(1, 13))
-YEARS  = [2024, 2025, 2026, 2027, 2028]     # 2028까지 선택 가능
+YEARS  = [2024, 2025, 2026, 2027, 2028]
 SCENARIOS = ["데이터", "best", "conservative"]
 
 # ─────────────────────────────────────────────────────────
@@ -259,7 +256,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         # 불일치 자동 교정 안내
         fixed = int(long_df.attrs.get("year_month_mismatch_fixed", 0))
         if fixed > 0:
-            st.caption(f"참고: '일자' 기준으로 연/월 불일치 {fixed}건을 자동 교정함.")
+            st.caption(f"'일자' 기준으로 연/월 불일치 {fixed}건을 자동 교정함.")
 
         # 연도별 표
         ytabs = st.tabs([f"{y}년 표" for y in YEARS])
@@ -278,35 +275,26 @@ for sn, tab in zip(SCENARIOS, scenario):
         sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
                                          default="총량", key=f"grp_{sn}")
 
-        # 기본 베이스: 선택 연도 + 시트 내 '합계' 구분 제외(이중집계 방지)
+        # 선택 연도 + '합계' 구분 제외(이중집계 방지)
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
         plot_base = plot_base[plot_base["구분"] != "합계"]
 
-        # 그룹 필터(총량은 별도 계산)
-        group_df = plot_base if sel_group == "총량" else plot_base[plot_base["구분"] == sel_group]
-
-        frames = []
-
-        # (1) 선택 그룹
-        if sel_group != "총량" and not group_df.empty:
-            g1 = (group_df.groupby(["연","구분","월"], as_index=False)["값"].sum()
-                  .sort_values(["연","구분","월"]))
-            g1["라벨"] = g1["연"].astype(str) + "년 · " + g1["구분"].astype(str)
-            frames.append(g1)
-
-        # (2) 총량(항상 추가)
-        total_df = (plot_base.groupby(["연","월"], as_index=False)["값"].sum()
-                    .sort_values(["연","월"]))
-        total_df["구분"] = "총량"
-        total_df["라벨"] = total_df["연"].astype(str) + "년 · 총량"
+        # ▶ 선택한 그룹만 표시
         if sel_group == "총량":
-            frames = [total_df]
+            plot_df = (
+                plot_base.groupby(["연","월"], as_index=False)["값"].sum()
+                .sort_values(["연","월"])
+            )
+            plot_df["라벨"] = plot_df["연"].astype(str) + "년 · 총량"
         else:
-            frames.append(total_df)
+            plot_df = (
+                plot_base[plot_base["구분"] == sel_group]
+                .groupby(["연","구분","월"], as_index=False)["값"].sum()
+                .sort_values(["연","구분","월"])
+            )
+            plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
 
-        plot_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-        # 예측/실적 라벨링: 2025-11 이후 또는 연>2025는 '예측'
+        # 예측/실적 라벨링
         if not plot_df.empty:
             ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
             plot_df["예측"] = np.where(
@@ -321,8 +309,8 @@ for sn, tab in zip(SCENARIOS, scenario):
                 plot_df,
                 x="월",
                 y="값",
-                color="라벨",           # 색상은 '연 · 그룹'
-                line_dash="예측",       # 실선/점선
+                color="라벨",
+                line_dash="예측",                     # 실선/점선
                 category_orders={"예측": ["실적","예측"]},
                 line_dash_map={"실적": "solid", "예측": "dash"},
                 markers=True,
