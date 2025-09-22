@@ -1,10 +1,10 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
-# 업데이트:
-#  • 그룹(용도) 큰 순서 고정: 가정용→업무용→산업용→영업용→열병합→연료전지→자가열전용→열전용설비용→CNG→수송용→(합계)
-#  • 각 그룹 내부의 세부 항목 순서는 "엑셀 헤더의 등장 순서" 그대로 유지
-#  • 그룹 소계/전체 합계 자동 생성, 소계·합계 하이라이트
-#  • 그래프: 선택한 그룹만 표시, 2025-11 이후/연>2025는 예측(점선)
+# 변경 요약
+#  • 표 행 순서: 엑셀 헤더 '왼→오' 등장 순서 그대로(그룹/세부)
+#  • 소계/합계가 시트에 없으면 생성하지 않음(자동 소계/합계 제거)
+#  • '그룹_세부' / '그룹/세부' / '그룹 세부' / '그룹-세부' / '그룹.세부' / '그룹세부' 모두 인식
+#  • 그래프: 선택 그룹만 표시, 2025-11 이후(및 연>2025)는 예측(점선)
 
 import io
 import re
@@ -39,20 +39,16 @@ st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide
 # ─────────────────────────────────────────────────────────
 DEFAULT_XLSX = "사업계획최종.xlsx"
 DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
-PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 '예측'
-# 그룹 이름 리스트(파서용)
+PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 '예측'으로 표기
+
+# 인지 가능한 그룹명(파싱에 사용)
 GROUP_NAMES = [
     "가정용", "영업용", "업무용", "산업용",
     "열병합", "연료전지", "자가열전용", "열전용설비용",
     "CNG", "수송용", "합계"
 ]
-# ▶ 그룹 우선순위(요청 반영: 업무용 다음은 산업용)
-GROUP_ORDER = [
-    "가정용", "업무용", "산업용", "영업용",
-    "열병합", "연료전지", "자가열전용", "열전용설비용", "CNG", "수송용", "합계"
-]
 
-# 열 이름 → (구분, 세부) : 정확 매핑
+# 열 이름 → (구분, 세부) : 정확 일치 매핑(최우선 적용)
 COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     # 가정용
     "취사용": ("가정용", "취사용"),
@@ -70,7 +66,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "냉난방": ("업무용", "냉난방용"),
     "냉난방용": ("업무용", "냉난방용"),
     "주한미군": ("업무용", "주한미군"),
-    "소계": ("업무용", "소계"),  # 시트에 '소계' 단독 열 대응
+    "소계": ("업무용", "소계"),   # 시트에 '소계' 단독 컬럼 대응
     "산업용": ("산업용", "합계"),
     # 기타
     "열병합": ("열병합", "합계"),
@@ -100,24 +96,34 @@ def normalize_col(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip()
 
 def simplify_key(s: str) -> str:
+    """키 비교용 간소화(공백/구분자 제거, 소문자)."""
     s = normalize_col(s)
     return re.sub(r"[ \t/,_\-.]+", "", s).lower()
 
 def parse_column_name(raw_name: str) -> Optional[Tuple[str, str]]:
     """
-    헤더를 (구분,세부)로 파싱.
-    1) COL_TO_GROUP 키 일치
-    2) '그룹{구분자}세부' (공백/슬래시/언더스코어/하이픈/점)
-    3) '그룹세부' 접두
+    엑셀 헤더를 (구분, 세부)로 파싱.
+    1) COL_TO_GROUP 간소키 일치 → 매핑
+    2) '그룹{구분자}세부' 자동 파싱(공백/슬래시/언더스코어/하이픈/점)
+    3) '그룹세부' 붙은 형태: 그룹명으로 시작하면 분리
     """
     n = normalize_col(raw_name)
     key = simplify_key(n)
+
+    # 1) 명시 매핑
     for k, (g, s) in COL_TO_GROUP.items():
         if simplify_key(k) == key:
             return (g, s)
+
+    # 2) 패턴 파싱
     parts = re.split(r"[ \t/,_\-.]+", n)
-    if len(parts) >= 2 and parts[0] in GROUP_NAMES:
-        return (parts[0], " ".join(parts[1:]))
+    if len(parts) >= 2:
+        g_cand = parts[0]
+        s_cand = " ".join(parts[1:])
+        if g_cand in GROUP_NAMES:
+            return (g_cand, s_cand)
+
+    # 3) 붙은 형태
     for g in GROUP_NAMES:
         if n.startswith(g):
             rest = n[len(g):].strip()
@@ -146,9 +152,11 @@ def detect_date_col(df: pd.DataFrame) -> Optional[str]:
     return None
 
 def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
+    """'일자'가 있으면 연/월을 항상 일자에서 재계산하여 덮어씀(불일치 자동 교정)."""
     out = df.copy()
     mismatch_cnt = 0
     date_col = detect_date_col(out)
+
     if date_col and date_col in out.columns:
         out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
         y = out[date_col].dt.year.astype("Int64")
@@ -163,15 +171,18 @@ def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
             out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
         if "월" in out.columns:
             out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
+
     out.attrs["year_month_mismatch_fixed"] = mismatch_cnt
     return out
 
 def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
-    order, seen = [], set()
+    """엑셀 '열 등장 순서'를 (구분,세부) 쌍으로 그대로 보존."""
+    order: List[Tuple[str, str]] = []
+    seen = set()
     for c in raw_df.columns:
         p = parse_column_name(c)
         if p and p not in seen:
-            order.append(p)  # 엑셀 헤더 등장 순서 보존
+            order.append(p)  # 헤더 순서 그대로
             seen.add(p)
     return order
 
@@ -179,100 +190,49 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_year_month(df)
     if ("연" not in df.columns) or ("월" not in df.columns):
         return pd.DataFrame(columns=["구분","세부","연","월","값"])
+
     key_map: Dict[str, Tuple[str, str]] = {}
     for raw_col in df.columns:
-        p = parse_column_name(str(raw_col))
-        if p:
-            key_map[raw_col] = p
+        parsed = parse_column_name(str(raw_col))
+        if parsed:
+            key_map[raw_col] = parsed
+
     if not key_map:
         return pd.DataFrame(columns=["구분","세부","연","월","값"])
+
     base = df[["연","월"]].copy()
-    recs = []
+    records = []
     for raw_col, (gg, ss) in key_map.items():
         v = pd.to_numeric(df[raw_col], errors="coerce").fillna(0.0)
-        t = base.copy()
-        t["구분"], t["세부"], t["값"] = gg, ss, v
-        recs.append(t)
-    long_df = pd.concat(recs, ignore_index=True)
+        tmp = base.copy()
+        tmp["구분"], tmp["세부"], tmp["값"] = gg, ss, v
+        records.append(tmp)
+
+    long_df = pd.concat(records, ignore_index=True)
     long_df["연"] = pd.to_numeric(long_df["연"], errors="coerce").astype("Int64")
     long_df["월"] = pd.to_numeric(long_df["월"], errors="coerce").astype("Int64")
     long_df = long_df.dropna(subset=["연","월"])
     long_df.attrs["year_month_mismatch_fixed"] = df.attrs.get("year_month_mismatch_fixed", 0)
     return long_df
 
-def add_subtotals_and_total(pv: pd.DataFrame) -> pd.DataFrame:
-    if pv.empty:
-        return pv
-    pv2 = pv.copy()
-    groups = sorted(set(idx[0] for idx in pv2.index))
-    for g in groups:
-        if (g, "소계") in pv2.index:
-            continue
-        rows = [idx for idx in pv2.index if idx[0] == g and idx[1] not in ("소계","합계")]
-        if not rows:
-            continue
-        subtotal = pv2.loc[rows].sum(axis=0)
-        subtotal.name = (g, "소계")
-        pv2 = pd.concat([pv2, subtotal.to_frame().T])
-    if ("합계","합계") not in pv2.index:
-        total_row = pv2.sum(axis=0)
-        total_row.name = ("합계","합계")
-        pv2 = pd.concat([pv2, total_row.to_frame().T])
-    return pv2
-
 def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
     """
-    그룹 큰 순서는 GROUP_ORDER로 고정,
-    각 그룹 내부의 세부 항목 순서는 order_pairs(엑셀 헤더 순서)를 그대로 사용.
+    절대 기준 = 엑셀 헤더 순서.
+    1) order_pairs 순서대로(존재하는 행만) 배치
+    2) order_pairs에 없지만 pivot에 존재하는 행은 뒤에 덧붙임
+    (소계/합계 자동 생성하지 않음)
     """
     if pv.empty:
         return pv
 
-    # 그룹별 세부 등장 순서 수집(엑셀 헤더 순서)
-    group_to_details: Dict[str, List[str]] = {}
-    for g, s in order_pairs:
-        if s in ("소계","합계"):
-            continue
-        if (g, s) not in pv.index:
-            continue
-        group_to_details.setdefault(g, [])
-        if s not in group_to_details[g]:
-            group_to_details[g].append(s)
-
-    # pivot에 있는데 헤더에 없던 세부는 뒤에 덧붙임
-    for (g, s) in pv.index:
-        if s in ("소계","합계"):
-            continue
-        group_to_details.setdefault(g, [])
-        if s not in group_to_details[g]:
-            group_to_details[g].append(s)
-
-    # 최종 그룹 순서: GROUP_ORDER ∩ 존재그룹  → 나머지(헤더 등장 순서)
-    existing_groups = [idx[0] for idx in pv.index if idx[0] != "합계"]
-    existing_groups_unique = []
-    for g in existing_groups:
-        if g not in existing_groups_unique:
-            existing_groups_unique.append(g)
-
-    final_groups: List[str] = [g for g in GROUP_ORDER if g in existing_groups_unique and g != "합계"]
-    for g in existing_groups_unique:
-        if g not in final_groups and g != "합계":
-            final_groups.append(g)
-
-    # 재배열 인덱스 생성
     final_index: List[Tuple[str, str]] = []
-    for g in final_groups:
-        details = group_to_details.get(g, [])
-        for s in details:
-            if (g, s) in pv.index:
-                final_index.append((g, s))
-        if (g, "소계") in pv.index:
-            final_index.append((g, "소계"))
 
-    if ("합계","합계") in pv.index:
-        final_index.append(("합계","합계"))
+    # ① 헤더 순서대로
+    for pair in order_pairs:
+        if pair in pv.index and pair not in final_index:
+            final_index.append(pair)
 
-    # 누락 보정
+    # ② 누락 보완(피벗에는 있는데 헤더 파싱에서 누락된 케이스)
     for idx in pv.index:
         if idx not in final_index:
             final_index.append(idx)
@@ -286,16 +246,19 @@ def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, st
         pivot = pd.DataFrame(index=idx, columns=MONTHS).fillna(0.0)
         pivot["합계"] = 0.0
         return pivot
+
     pv = (
         view.groupby(["구분","세부","월"], as_index=False)["값"]
         .sum()
         .pivot_table(index=["구분","세부"], columns="월", values="값", aggfunc="sum")
-        .reindex(columns=MONTHS).fillna(0.0)
+        .reindex(columns=MONTHS)
+        .fillna(0.0)
     )
     pv.columns.name = ""
-    pv["합계"] = pv.sum(axis=1)
+    # 표 '행 합계'는 요구 없으므로 생성하지 않음. 필요하면 아래 주석 해제.
+    # pv["합계"] = pv.sum(axis=1)
 
-    pv = add_subtotals_and_total(pv)
+    # 자동 소계/합계 생성 제거 → 단순 정렬만 수행
     pv = reorder_by_sheet_columns(pv, order_pairs)
     return pv
 
@@ -303,11 +266,14 @@ def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
     p = pivot.copy()
     p.index = p.index.map(lambda t: " / ".join(map(str, t)) if isinstance(t, tuple) else str(t))
     styler = p.style.format({c: "{:,.0f}" for c in p.columns}, na_rep="0")
+
+    # 시트에 존재하는 소계/합계만 하이라이트
     def highlight(row):
         name = str(row.name)
         if name.endswith(" / 소계") or name.endswith("합계"):
             return ["background-color: rgba(0,0,0,0.10)"] * len(row)
         return ["" for _ in row]
+
     return styler.apply(highlight, axis=1)
 
 def show_table(df: pd.DataFrame, key: str):
@@ -360,7 +326,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
-        order_pairs = sheet_column_order_pairs(raw)
+        order_pairs = sheet_column_order_pairs(raw)  # 엑셀 헤더 순서 반영
         long_df = to_long(raw)
 
         fixed = int(long_df.attrs.get("year_month_mismatch_fixed", 0))
