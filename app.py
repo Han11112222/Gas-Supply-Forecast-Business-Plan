@@ -1,10 +1,5 @@
 # app.py
-# 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
-# 변경 요약
-#  • 표 행 순서: 엑셀 헤더 '왼→오' 등장 순서 그대로(그룹/세부)
-#  • 소계/합계가 시트에 없으면 생성하지 않음(자동 소계/합계 제거)
-#  • '그룹_세부' / '그룹/세부' / '그룹 세부' / '그룹-세부' / '그룹.세부' / '그룹세부' 모두 인식
-#  • 그래프: 선택 그룹만 표시, 2025-11 이후(및 연>2025)는 예측(점선)
+# 공급량 실적 및 계획 상세 — 표는 엑셀 헤더 순서 1:1 반영, 소계/합계는 시트에 있는 것만 표시
 
 import io
 import re
@@ -35,30 +30,28 @@ set_korean_font()
 st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide")
 
 # ─────────────────────────────────────────────────────────
-# 환경/상수
+# 상수
 # ─────────────────────────────────────────────────────────
 DEFAULT_XLSX = "사업계획최종.xlsx"
 DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
-PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 '예측'으로 표기
+PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 예측(점선)
 
-# 인지 가능한 그룹명(파싱에 사용)
 GROUP_NAMES = [
     "가정용", "영업용", "업무용", "산업용",
     "열병합", "연료전지", "자가열전용", "열전용설비용",
     "CNG", "수송용", "합계"
 ]
 
-# 열 이름 → (구분, 세부) : 정확 일치 매핑(최우선 적용)
+# 명시 매핑(정확히 일치할 때만)
 COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     # 가정용
     "취사용": ("가정용", "취사용"),
     "개별난방": ("가정용", "개별난방"),
     "중앙난방": ("가정용", "중앙난방"),
     "가정용소계": ("가정용", "소계"),
-    "가정용소계(합계)": ("가정용", "소계"),
     "가정용 소계": ("가정용", "소계"),
     "소계(가정용)": ("가정용", "소계"),
-    # 영업/업무/산업 등
+    # 영업/업무/산업
     "일반용": ("영업용", "일반용"),
     "일반용1": ("영업용", "일반용1"),
     "일반용2": ("영업용", "일반용2"),
@@ -66,10 +59,12 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "냉난방": ("업무용", "냉난방용"),
     "냉난방용": ("업무용", "냉난방용"),
     "주한미군": ("업무용", "주한미군"),
-    "소계": ("업무용", "소계"),   # 시트에 '소계' 단독 컬럼 대응
+    "업무용소계": ("업무용", "소계"),
+    "업무용 소계": ("업무용", "소계"),
     "산업용": ("산업용", "합계"),
     # 기타
     "열병합": ("열병합", "합계"),
+    "열병합용": ("열병합", "용"),
     "연료전지": ("연료전지", "합계"),
     "자가열전용": ("자가열전용", "합계"),
     "자가열병합": ("자가열전용", "합계"),
@@ -79,7 +74,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "BIO": ("수송용", "BIO"),
     "수송용소계": ("수송용", "소계"),
     "수송용 소계": ("수송용", "소계"),
-    # 최종 합계
+    # 전체
     "합계": ("합계", "합계"),
 }
 
@@ -96,26 +91,21 @@ def normalize_col(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip()
 
 def simplify_key(s: str) -> str:
-    """키 비교용 간소화(공백/구분자 제거, 소문자)."""
+    """비교용 키(구분자 제거/소문자)."""
     s = normalize_col(s)
     return re.sub(r"[ \t/,_\-.]+", "", s).lower()
 
-def parse_column_name(raw_name: str) -> Optional[Tuple[str, str]]:
-    """
-    엑셀 헤더를 (구분, 세부)로 파싱.
-    1) COL_TO_GROUP 간소키 일치 → 매핑
-    2) '그룹{구분자}세부' 자동 파싱(공백/슬래시/언더스코어/하이픈/점)
-    3) '그룹세부' 붙은 형태: 그룹명으로 시작하면 분리
-    """
+def try_parse_explicit(raw_name: str) -> Optional[Tuple[str, str]]:
+    """명시 매핑 또는 '그룹{구분자}세부'/'그룹세부'를 파싱."""
     n = normalize_col(raw_name)
     key = simplify_key(n)
 
-    # 1) 명시 매핑
+    # 1) 정확 매핑
     for k, (g, s) in COL_TO_GROUP.items():
         if simplify_key(k) == key:
             return (g, s)
 
-    # 2) 패턴 파싱
+    # 2) '그룹{구분자}세부'
     parts = re.split(r"[ \t/,_\-.]+", n)
     if len(parts) >= 2:
         g_cand = parts[0]
@@ -123,7 +113,7 @@ def parse_column_name(raw_name: str) -> Optional[Tuple[str, str]]:
         if g_cand in GROUP_NAMES:
             return (g_cand, s_cand)
 
-    # 3) 붙은 형태
+    # 3) '그룹세부'
     for g in GROUP_NAMES:
         if n.startswith(g):
             rest = n[len(g):].strip()
@@ -152,38 +142,56 @@ def detect_date_col(df: pd.DataFrame) -> Optional[str]:
     return None
 
 def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
-    """'일자'가 있으면 연/월을 항상 일자에서 재계산하여 덮어씀(불일치 자동 교정)."""
+    """'일자'가 있으면 연/월을 일자에서 재계산(불일치 자동 교정)."""
     out = df.copy()
-    mismatch_cnt = 0
     date_col = detect_date_col(out)
-
     if date_col and date_col in out.columns:
         out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-        y = out[date_col].dt.year.astype("Int64")
-        m = out[date_col].dt.month.astype("Int64")
-        if "연" in out.columns:
-            mismatch_cnt += int(((pd.to_numeric(out["연"], errors="coerce").astype("Int64") != y) & y.notna()).sum())
-        if "월" in out.columns:
-            mismatch_cnt += int(((pd.to_numeric(out["월"], errors="coerce").astype("Int64") != m) & m.notna()).sum())
-        out["연"], out["월"] = y, m
+        out["연"] = out[date_col].dt.year.astype("Int64")
+        out["월"] = out[date_col].dt.month.astype("Int64")
     else:
         if "연" in out.columns:
             out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
         if "월" in out.columns:
             out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
-
-    out.attrs["year_month_mismatch_fixed"] = mismatch_cnt
     return out
 
 def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
-    """엑셀 '열 등장 순서'를 (구분,세부) 쌍으로 그대로 보존."""
+    """
+    엑셀 '열 등장 순서'를 (구분,세부)로 **컨텍스트 보존**하여 반환.
+    - '소계'처럼 그룹이 생략된 헤더는 직전에 인식된 그룹으로 귀속.
+    - '합계'는 ('합계','합계').
+    """
     order: List[Tuple[str, str]] = []
     seen = set()
-    for c in raw_df.columns:
-        p = parse_column_name(c)
-        if p and p not in seen:
-            order.append(p)  # 헤더 순서 그대로
-            seen.add(p)
+    current_group: Optional[str] = None
+
+    skip_keys = {simplify_key(c) for c in ["연", "월"] + DATE_COL_CANDIDATES}
+
+    for raw in raw_df.columns:
+        n = normalize_col(str(raw))
+        key = simplify_key(n)
+
+        # 날짜/연/월 컬럼 스킵
+        if key in skip_keys:
+            continue
+
+        parsed = try_parse_explicit(n)
+
+        # 컨텍스트 소계 처리
+        if parsed is None:
+            if simplify_key(n) == simplify_key("소계") and current_group:
+                parsed = (current_group, "소계")
+            elif simplify_key(n) == simplify_key("합계"):
+                parsed = ("합계", "합계")
+
+        if parsed:
+            g, s = parsed
+            current_group = g  # 컨텍스트 갱신
+            if (g, s) not in seen:
+                order.append((g, s))
+                seen.add((g, s))
+
     return order
 
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
@@ -191,61 +199,64 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     if ("연" not in df.columns) or ("월" not in df.columns):
         return pd.DataFrame(columns=["구분","세부","연","월","값"])
 
-    key_map: Dict[str, Tuple[str, str]] = {}
-    for raw_col in df.columns:
-        parsed = parse_column_name(str(raw_col))
-        if parsed:
-            key_map[raw_col] = parsed
-
-    if not key_map:
-        return pd.DataFrame(columns=["구분","세부","연","월","값"])
-
     base = df[["연","월"]].copy()
     records = []
-    for raw_col, (gg, ss) in key_map.items():
-        v = pd.to_numeric(df[raw_col], errors="coerce").fillna(0.0)
+
+    # 열 순서대로 읽어 같은 방식으로 매핑(컨텍스트 사용)
+    order_pairs = sheet_column_order_pairs(df)
+    # 역매핑: (구분,세부) -> 해당하는 실제 컬럼들
+    rev: Dict[Tuple[str,str], List[str]] = {}
+    for c in df.columns:
+        n = normalize_col(str(c))
+        parsed = try_parse_explicit(n)
+        # 컨텍스트 '소계' 보정
+        if parsed is None:
+            if simplify_key(n) == simplify_key("소계"):
+                # 직전 구분을 찾기 위해 order_pairs를 이용
+                # 가장 마지막으로 추가된 구분을 사용
+                pass  # to_long에서는 소계도 개별 컬럼으로 처리되므로 위 order_pairs로 충분
+
+        if parsed:
+            rev.setdefault(parsed, []).append(n)
+
+    # order_pairs 기준으로 값 적재(동일 (구분,세부)로 매핑되는 여러 열이 있으면 모두 합산)
+    for g, s in order_pairs:
+        cols = rev.get((g, s), [])
+        if not cols:
+            # 혹시 누락됐어도 넘어감(빈 컬럼)
+            continue
+        v_sum = sum([pd.to_numeric(df[c], errors="coerce").fillna(0.0) for c in cols])
         tmp = base.copy()
-        tmp["구분"], tmp["세부"], tmp["값"] = gg, ss, v
+        tmp["구분"], tmp["세부"], tmp["값"] = g, s, v_sum
         records.append(tmp)
+
+    if not records:
+        return pd.DataFrame(columns=["구분","세부","연","월","값"])
 
     long_df = pd.concat(records, ignore_index=True)
     long_df["연"] = pd.to_numeric(long_df["연"], errors="coerce").astype("Int64")
     long_df["월"] = pd.to_numeric(long_df["월"], errors="coerce").astype("Int64")
     long_df = long_df.dropna(subset=["연","월"])
-    long_df.attrs["year_month_mismatch_fixed"] = df.attrs.get("year_month_mismatch_fixed", 0)
     return long_df
 
 def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    """
-    절대 기준 = 엑셀 헤더 순서.
-    1) order_pairs 순서대로(존재하는 행만) 배치
-    2) order_pairs에 없지만 pivot에 존재하는 행은 뒤에 덧붙임
-    (소계/합계 자동 생성하지 않음)
-    """
+    """그대로 재배열: 헤더에서 얻은 order_pairs 순서 → 나머지(존재하지만 헤더 매핑 안된 것)."""
     if pv.empty:
         return pv
-
     final_index: List[Tuple[str, str]] = []
-
-    # ① 헤더 순서대로
     for pair in order_pairs:
-        if pair in pv.index and pair not in final_index:
+        if pair in pv.index:
             final_index.append(pair)
-
-    # ② 누락 보완(피벗에는 있는데 헤더 파싱에서 누락된 케이스)
     for idx in pv.index:
         if idx not in final_index:
             final_index.append(idx)
-
     return pv.reindex(final_index)
 
 def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
     view = long_df[long_df["연"] == year].copy()
     if view.empty:
         idx = pd.MultiIndex.from_tuples([], names=["구분","세부"])
-        pivot = pd.DataFrame(index=idx, columns=MONTHS).fillna(0.0)
-        pivot["합계"] = 0.0
-        return pivot
+        return pd.DataFrame(index=idx, columns=MONTHS).fillna(0.0)
 
     pv = (
         view.groupby(["구분","세부","월"], as_index=False)["값"]
@@ -255,10 +266,6 @@ def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, st
         .fillna(0.0)
     )
     pv.columns.name = ""
-    # 표 '행 합계'는 요구 없으므로 생성하지 않음. 필요하면 아래 주석 해제.
-    # pv["합계"] = pv.sum(axis=1)
-
-    # 자동 소계/합계 생성 제거 → 단순 정렬만 수행
     pv = reorder_by_sheet_columns(pv, order_pairs)
     return pv
 
@@ -266,14 +273,11 @@ def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
     p = pivot.copy()
     p.index = p.index.map(lambda t: " / ".join(map(str, t)) if isinstance(t, tuple) else str(t))
     styler = p.style.format({c: "{:,.0f}" for c in p.columns}, na_rep="0")
-
-    # 시트에 존재하는 소계/합계만 하이라이트
     def highlight(row):
         name = str(row.name)
         if name.endswith(" / 소계") or name.endswith("합계"):
             return ["background-color: rgba(0,0,0,0.10)"] * len(row)
         return ["" for _ in row]
-
     return styler.apply(highlight, axis=1)
 
 def show_table(df: pd.DataFrame, key: str):
@@ -291,7 +295,6 @@ def show_table(df: pd.DataFrame, key: str):
 # ─────────────────────────────────────────────────────────
 st.title("공급량 실적 및 계획 상세")
 
-# 데이터 소스
 with st.sidebar:
     st.header("데이터 불러오기")
     src = st.radio("데이터 소스", ["레포 파일 사용", "엑셀 업로드(.xlsx)"], index=0)
@@ -308,13 +311,11 @@ with st.sidebar:
             excel_bytes = path.read_bytes()
 st.caption(base_info)
 
-# 시나리오 탭 & 엑셀 로드
 scenario = st.tabs(SCENARIOS)
 sheets: Dict[str, pd.DataFrame] = {}
 if excel_bytes:
     sheets = read_excel_all_sheets(excel_bytes)
 
-# 시나리오별 화면
 for sn, tab in zip(SCENARIOS, scenario):
     with tab:
         st.subheader(f"시나리오: {sn}")
@@ -326,12 +327,8 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
-        order_pairs = sheet_column_order_pairs(raw)  # 엑셀 헤더 순서 반영
+        order_pairs = sheet_column_order_pairs(raw)     # 엑셀 헤더 순서(컨텍스트 포함)
         long_df = to_long(raw)
-
-        fixed = int(long_df.attrs.get("year_month_mismatch_fixed", 0))
-        if fixed > 0:
-            st.caption(f"'일자' 기준으로 연/월 불일치 {fixed}건을 자동 교정함.")
 
         # 연도별 표
         ytabs = st.tabs([f"{y}년 표" for y in YEARS])
@@ -344,17 +341,14 @@ for sn, tab in zip(SCENARIOS, scenario):
         st.markdown("---")
         st.subheader("월별 추이 그래프")
 
-        # 연도·그룹 선택
         sel_years = st.multiselect("연도 선택(그래프)", YEARS, default=YEARS, key=f"yrs_{sn}")
         group_options = ["총량","가정용","영업용","업무용","산업용","열병합","연료전지","자가열전용","열전용설비용","CNG","수송용"]
         sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
                                          default="총량", key=f"grp_{sn}")
 
-        # 선택 연도 + '합계' 구분 제외(이중집계 방지)
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
         plot_base = plot_base[plot_base["구분"] != "합계"]
 
-        # 선택한 그룹만 표시
         if sel_group == "총량":
             plot_df = (
                 plot_base.groupby(["연","월"], as_index=False)["값"].sum()
@@ -369,7 +363,6 @@ for sn, tab in zip(SCENARIOS, scenario):
             )
             plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
 
-        # 예측/실적 라벨링
         if not plot_df.empty:
             ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
             plot_df["예측"] = np.where(
@@ -382,8 +375,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         else:
             fig = px.line(
                 plot_df,
-                x="월",
-                y="값",
+                x="월", y="값",
                 color="라벨",
                 line_dash="예측",
                 category_orders={"예측": ["실적","예측"]},
