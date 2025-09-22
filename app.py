@@ -1,5 +1,5 @@
 # app.py
-# 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
+# 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프 (전체→총량, 총량 라인 항상 표시)
 
 import io
 import os
@@ -61,8 +61,8 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     # 기타 에너지
     "열병합": ("열병합", "합계"),
     "연료전지": ("연료전지", "합계"),
-    "자가열전용": ("자가열전용", "합계"),  # 명칭 고정
-    "자가열병합": ("자가열전용", "합계"),   # 잘못된 표기 들어와도 강제 매핑
+    "자가열전용": ("자가열전용", "합계"),
+    "자가열병합": ("자가열전용", "합계"),   # 잘못 표기도 수용
     "열전용설비용": ("열전용설비용", "합계"),
     "CNG": ("CNG", "합계"),
     # 수송용
@@ -213,7 +213,7 @@ def make_pivot(long_df: pd.DataFrame, year: int) -> pd.DataFrame:
 
 
 def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    # Styler 쪽 버그를 피하려고 인덱스를 문자열로 강제
+    # Styler 쪽 버그 회피: 인덱스를 문자열로 강제
     p = pivot.copy()
     p.index = p.index.map(lambda t: " / ".join([str(t) for t in t]) if isinstance(t, tuple) else str(t))
 
@@ -307,32 +307,60 @@ for sn, tab in zip(SCENARIOS, scenario):
         st.markdown("---")
         st.subheader("월별 추이 그래프")
 
-        # 연도 선택(다중) + 그룹 선택 + 합계 포함 토글(NEW)
+        # 연도 선택(다중) + 그룹 선택 + 합계 포함 토글
         sel_years = st.multiselect("연도 선택(그래프)", YEARS, default=YEARS, key=f"yrs_{sn}")
-        group_options = ["전체", "가정용", "영업용", "업무용", "산업용", "열병합", "연료전지", "자가열전용", "열전용설비용", "CNG", "수송용"]
-        sel_group = st.segmented_control("그룹", group_options, selection_mode="single", default="전체", key=f"grp_{sn}")
-        include_sum = st.toggle("합계 포함", value=False, key=f"sum_{sn}")  # ← 추가된 버튼
 
+        # ▶ ‘전체’ → ‘총량’으로 명확화
+        group_options = ["총량", "가정용", "영업용", "업무용", "산업용",
+                         "열병합", "연료전지", "자가열전용", "열전용설비용", "CNG", "수송용"]
+        sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
+                                         default="총량", key=f"grp_{sn}")
+
+        include_sum = st.toggle("합계 포함(시트 내 소계/합계 라인 포함)", value=False, key=f"sum_{sn}")
+
+        # 기본 베이스(선택 연도)
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
 
-        # 그룹 필터
-        if sel_group != "전체":
-            plot_base = plot_base[plot_base["구분"] == sel_group]
-
-        # 합계 포함 여부 필터(NEW)
+        # 기본값에서는 시트 내 '합계' 구분 제거(이중집계 방지)
         if not include_sum:
             plot_base = plot_base[plot_base["구분"] != "합계"]
 
-        if plot_base.empty:
-            st.info("선택 조건에 해당하는 데이터가 없습니다.")
-        else:
-            # 월 합계 by 연/구분
-            plot_df = (
-                plot_base.groupby(["연", "구분", "월"], as_index=False)["값"].sum()
+        # 선택 그룹 필터(총량은 별도 계산)
+        group_df = plot_base.copy()
+        if sel_group != "총량":
+            group_df = group_df[group_df["구분"] == sel_group]
+
+        # 그래프용: (1) 선택 그룹 월별 합, (2) 총량(전체소계량) 월별 합
+        frames = []
+
+        # (1) 선택 그룹
+        if not group_df.empty and sel_group != "총량":
+            g1 = (
+                group_df.groupby(["연", "구분", "월"], as_index=False)["값"]
+                .sum()
                 .sort_values(["연", "구분", "월"])
             )
-            # 라벨: 연(구분)
-            plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
+            g1["라벨"] = g1["연"].astype(str) + "년 · " + g1["구분"].astype(str)
+            frames.append(g1)
+
+        # (2) 총량: 구분 전체 합(항상 추가) — 사용자가 ‘총량’을 선택하면 이것만 보임
+        total_df = (
+            plot_base.groupby(["연", "월"], as_index=False)["값"].sum()
+            .sort_values(["연", "월"])
+        )
+        total_df["구분"] = "총량"
+        total_df["라벨"] = total_df["연"].astype(str) + "년 · 총량"
+
+        if sel_group == "총량":
+            frames = [total_df]
+        else:
+            frames.append(total_df)
+
+        plot_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+        if plot_df.empty:
+            st.info("선택 조건에 해당하는 데이터가 없습니다.")
+        else:
             fig = px.line(
                 plot_df,
                 x="월",
