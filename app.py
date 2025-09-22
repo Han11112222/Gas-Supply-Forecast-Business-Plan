@@ -1,14 +1,15 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 시나리오/연도별 표 + 동적 그래프
-# 변경 요약:
-#  • 그래프에 "선택한 그룹만" 표시(총량은 오직 총량 선택 시에만)
-#  • 예측 시작: 2025-11부터 예측(점선)
-#  • '일자' 존재 시 연/월을 항상 일자에서 재계산(불일치 자동 교정)
+# 핵심 변경
+# 1) 표의 행 순서를 엑셀 시트의 "열(column) 등장 순서"에 맞게 재배열
+# 2) 각 그룹(가정용/영업용/업무용/… )의 '소계'를 자동 생성하여 표에 표시
+# 3) 소계/합계 행은 하이라이트
+# 4) 그래프는 "선택한 그룹만" 표시, 예측(2025-11~/연>2025)은 점선
 
 import io
 import unicodedata
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -47,10 +48,9 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "중앙난방": ("가정용", "중앙난방"),
     "가정용소계": ("가정용", "소계"),
     "가정용소계(합계)": ("가정용", "소계"),
-    "가정용소계 ": ("가정용", "소계"),
     "가정용 소계": ("가정용", "소계"),
     "소계(가정용)": ("가정용", "소계"),
-    # 영업/업무/산업
+    # 영업/업무/산업 등
     "일반용": ("영업용", "일반용"),
     "일반용1": ("영업용", "일반용1"),
     "일반용2": ("영업용", "일반용2"),
@@ -58,7 +58,7 @@ COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
     "냉난방": ("업무용", "냉난방용"),
     "냉난방용": ("업무용", "냉난방용"),
     "주한미군": ("업무용", "주한미군"),
-    "소계": ("업무용", "소계"),
+    "소계": ("업무용", "소계"),  # 일부 시트에서 '소계'가 업무용 소계로 들어오는 케이스 대응
     "산업용": ("산업용", "합계"),
     # 기타
     "열병합": ("열병합", "합계"),
@@ -135,6 +135,22 @@ def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
     out.attrs["year_month_mismatch_fixed"] = mismatch_cnt
     return out
 
+def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
+    """
+    엑셀 '열 등장 순서'를 (구분,세부) 쌍의 리스트로 반환.
+    매핑(COL_TO_GROUP)에 포함된 열만 수집하며, 중복은 제거.
+    """
+    pairs: List[Tuple[str, str]] = []
+    seen = set()
+    for c in raw_df.columns:
+        n = normalize_col(str(c))
+        if n in COL_TO_GROUP:
+            pair = COL_TO_GROUP[n]
+            if pair not in seen:
+                pairs.append(pair)
+                seen.add(pair)
+    return pairs
+
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_year_month(df)
     if ("연" not in df.columns) or ("월" not in df.columns):
@@ -163,7 +179,72 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     long_df.attrs["year_month_mismatch_fixed"] = df.attrs.get("year_month_mismatch_fixed", 0)
     return long_df
 
-def make_pivot(long_df: pd.DataFrame, year: int) -> pd.DataFrame:
+def add_subtotals_and_total(pv: pd.DataFrame) -> pd.DataFrame:
+    """각 그룹별 '소계'가 없으면 생성해 추가하고, 마지막에 전체 합계(합계/합계)도 추가."""
+    if pv.empty:
+        return pv
+
+    # 기존 인덱스 유지
+    pv2 = pv.copy()
+
+    groups = sorted(set([idx[0] for idx in pv2.index]))
+    for g in groups:
+        # 이미 소계가 있으면 건너뜀
+        if (g, "소계") in pv2.index:
+            continue
+        rows = [idx for idx in pv2.index if idx[0] == g and idx[1] not in ("소계", "합계")]
+        if not rows:
+            continue
+        subtotal = pv2.loc[rows].sum(axis=0)
+        subtotal.name = (g, "소계")
+        pv2 = pd.concat([pv2, subtotal.to_frame().T])
+
+    # 전체 합계
+    if ("합계", "합계") not in pv2.index:
+        total_row = pv2.sum(axis=0)
+        total_row.name = ("합계", "합계")
+        pv2 = pd.concat([pv2, total_row.to_frame().T])
+
+    return pv2
+
+def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
+    """엑셀 열 순서(order_pairs)에 맞게 (구분,세부) 인덱스를 재배열. 소계는 각 그룹의 마지막에 위치."""
+    if pv.empty:
+        return pv
+    # 그룹별로 원소 나열 후 소계/합계 위치 조정
+    result_index: List[Tuple[str, str]] = []
+    groups = {}
+    for (g, s) in pv.index:
+        groups.setdefault(g, []).append((g, s))
+
+    # 우선순위: order_pairs 등장 순서 → 같은 그룹의 항목들 순서
+    # order_pairs에 없는 항목은 뒤쪽에 붙임
+    for g in groups.keys():
+        # 이 그룹의 세부 항목 중 '소계'를 제외한 순서 리스트
+        items = [p for p in order_pairs if p[0] == g and p in groups[g] and p[1] != "소계"]
+        # order_pairs에 없지만 존재하는 항목(소계 제외)
+        remain = [p for p in groups[g] if p[1] != "소계" and p not in items and p[1] != "합계"]
+        ordered = items + remain
+        result_index.extend(ordered)
+        # 소계는 마지막
+        if (g, "소계") in groups[g]:
+            result_index.append((g, "소계"))
+
+    # 맨 마지막에 전체 합계
+    if ("합계", "합계") in pv.index:
+        result_index = [p for p in result_index if p != ("합계", "합계")]
+        result_index.append(("합계", "합계"))
+
+    # 중복/누락 보정
+    result_index = [p for p in result_index if p in pv.index]
+    # 남은 항목이 있으면 뒤에 붙임
+    for idx in pv.index:
+        if idx not in result_index:
+            result_index.append(idx)
+
+    return pv.reindex(result_index)
+
+def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
     view = long_df[long_df["연"] == year].copy()
     if view.empty:
         idx = pd.MultiIndex.from_tuples([], names=["구분","세부"])
@@ -181,23 +262,28 @@ def make_pivot(long_df: pd.DataFrame, year: int) -> pd.DataFrame:
     pv.columns.name = ""
     pv["합계"] = pv.sum(axis=1)
 
-    order = ["가정용","영업용","업무용","산업용","열병합","연료전지","자가열전용","열전용설비용","CNG","수송용","합계"]
-    pv = pv.sort_index(level=[0,1])
-    pv = pv.reindex(pd.MultiIndex.from_tuples(
-        sorted(pv.index, key=lambda t: (order.index(t[0]) if t[0] in order else 999, t[1]))
-    ))
+    # 1) 그룹 소계/전체 합계 추가
+    pv = add_subtotals_and_total(pv)
+    # 2) 엑셀 열 순서대로 재배열(+ 각 그룹 소계는 말미)
+    pv = reorder_by_sheet_columns(pv, order_pairs)
+
     return pv
 
 def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
     p = pivot.copy()
+    # 인덱스 표시를 "구분 / 세부"로
     p.index = p.index.map(lambda t: " / ".join(map(str, t)) if isinstance(t, tuple) else str(t))
     styler = p.style.format({c: "{:,.0f}" for c in p.columns}, na_rep="0")
+
     def highlight(row):
         name = str(row.name)
-        if ("소계" in name) or name.endswith("합계") or (name == "합계"):
-            return ["background-color: rgba(0,0,0,0.06)"] * len(row)
+        # ' / 소계' 또는 '합계'는 하이라이트
+        if name.endswith(" / 소계") or (name == "합계 / 합계") or name.endswith("합계"):
+            return ["background-color: rgba(0,0,0,0.10)"] * len(row)
         return ["" for _ in row]
-    return styler.apply(highlight, axis=1)
+
+    styler = styler.apply(highlight, axis=1)
+    return styler
 
 def show_table(df: pd.DataFrame, key: str):
     try:
@@ -231,10 +317,8 @@ with st.sidebar:
             excel_bytes = path.read_bytes()
 st.caption(base_info)
 
-# 시나리오 탭
+# 시나리오 탭 & 엑셀 로드
 scenario = st.tabs(SCENARIOS)
-
-# 엑셀 로드
 sheets: Dict[str, pd.DataFrame] = {}
 if excel_bytes:
     sheets = read_excel_all_sheets(excel_bytes)
@@ -251,6 +335,9 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
+        # 엑셀 컬럼 순서 보존용 쌍 리스트
+        order_pairs = sheet_column_order_pairs(raw)
+        # 롱포맷
         long_df = to_long(raw)
 
         # 불일치 자동 교정 안내
@@ -263,7 +350,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         for y, t in zip(YEARS, ytabs):
             with t:
                 st.markdown(f"**{y}년 표**")
-                pv = make_pivot(long_df, y)
+                pv = make_pivot(long_df, y, order_pairs)
                 show_table(pv, key=f"{sn}_{y}")
 
         st.markdown("---")
@@ -279,7 +366,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
         plot_base = plot_base[plot_base["구분"] != "합계"]
 
-        # ▶ 선택한 그룹만 표시
+        # 선택한 그룹만 표시
         if sel_group == "총량":
             plot_df = (
                 plot_base.groupby(["연","월"], as_index=False)["값"].sum()
@@ -294,7 +381,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             )
             plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
 
-        # 예측/실적 라벨링
+        # 예측/실적 라벨링(2025-11 이후, 또는 연>2025는 예측)
         if not plot_df.empty:
             ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
             plot_df["예측"] = np.where(
