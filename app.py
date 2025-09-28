@@ -1,9 +1,9 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 표는 엑셀 헤더 순서 1:1 반영, 소계/합계는 시트에 있는 것만 표시
 # 변경점:
-#  - 월별 추이 그래프 하단에 "선택 그룹의 세부 구성 그래프" 추가
-#  - 가정용 선택 시 (취사용, 개별난방, 중앙난방) 라인 동시 표시
-#  - 소계/합계 포함 여부 체크박스 제공(기본 제외)
+#  - 하단 "선택 그룹의 세부 구성 그래프"에 세부 버튼(총계/개별 세부) 추가
+#  - 가정용 기본 세트: 총계, 취사용, 개별난방, 중앙난방
+#  - 총계는 소계/합계가 아닌 실제 세부합(소계는 별도 선택 가능)
 
 import io
 import re
@@ -95,21 +95,17 @@ def normalize_col(s: str) -> str:
     return unicodedata.normalize("NFC", s).strip()
 
 def simplify_key(s: str) -> str:
-    """비교용 키(구분자 제거/소문자)."""
     s = normalize_col(s)
     return re.sub(r"[ \t/,_\-.]+", "", s).lower()
 
 def try_parse_explicit(raw_name: str) -> Optional[Tuple[str, str]]:
-    """명시 매핑 또는 '그룹{구분자}세부'/'그룹세부'를 파싱."""
     n = normalize_col(raw_name)
     key = simplify_key(n)
 
-    # 1) 정확 매핑
     for k, (g, s) in COL_TO_GROUP.items():
         if simplify_key(k) == key:
             return (g, s)
 
-    # 2) '그룹{구분자}세부'
     parts = re.split(r"[ \t/,_\-.]+", n)
     if len(parts) >= 2:
         g_cand = parts[0]
@@ -117,7 +113,6 @@ def try_parse_explicit(raw_name: str) -> Optional[Tuple[str, str]]:
         if g_cand in GROUP_NAMES:
             return (g_cand, s_cand)
 
-    # 3) '그룹세부'
     for g in GROUP_NAMES:
         if n.startswith(g):
             rest = n[len(g):].strip()
@@ -146,7 +141,6 @@ def detect_date_col(df: pd.DataFrame) -> Optional[str]:
     return None
 
 def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
-    """'일자'가 있으면 연/월을 일자에서 재계산(불일치 자동 교정)."""
     out = df.copy()
     date_col = detect_date_col(out)
     if date_col and date_col in out.columns:
@@ -161,28 +155,18 @@ def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
-    """
-    엑셀 '열 등장 순서'를 (구분,세부)로 **컨텍스트 보존**하여 반환.
-    - '소계'처럼 그룹이 생략된 헤더는 직전에 인식된 그룹으로 귀속.
-    - '합계'는 ('합계','합계').
-    """
     order: List[Tuple[str, str]] = []
     seen = set()
     current_group: Optional[str] = None
-
     skip_keys = {simplify_key(c) for c in ["연", "월"] + DATE_COL_CANDIDATES}
 
     for raw in raw_df.columns:
         n = normalize_col(str(raw))
         key = simplify_key(n)
-
-        # 날짜/연/월 컬럼 스킵
         if key in skip_keys:
             continue
 
         parsed = try_parse_explicit(n)
-
-        # 컨텍스트 소계 처리
         if parsed is None:
             if simplify_key(n) == simplify_key("소계") and current_group:
                 parsed = (current_group, "소계")
@@ -191,11 +175,10 @@ def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
 
         if parsed:
             g, s = parsed
-            current_group = g  # 컨텍스트 갱신
+            current_group = g
             if (g, s) not in seen:
                 order.append((g, s))
                 seen.add((g, s))
-
     return order
 
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
@@ -206,9 +189,7 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     base = df[["연","월"]].copy()
     records = []
 
-    # 열 순서대로 읽어 같은 방식으로 매핑(컨텍스트 사용)
     order_pairs = sheet_column_order_pairs(df)
-    # 역매핑: (구분,세부) -> 해당하는 실제 컬럼들
     rev: Dict[Tuple[str,str], List[str]] = {}
     for c in df.columns:
         n = normalize_col(str(c))
@@ -219,7 +200,6 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
         if parsed:
             rev.setdefault(parsed, []).append(n)
 
-    # order_pairs 기준으로 값 적재(동일 (구분,세부)로 매핑되는 여러 열이 있으면 모두 합산)
     for g, s in order_pairs:
         cols = rev.get((g, s), [])
         if not cols:
@@ -239,7 +219,6 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     return long_df
 
 def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    """그대로 재배열: 헤더에서 얻은 order_pairs 순서 → 나머지(존재하지만 헤더 매핑 안된 것)."""
     if pv.empty:
         return pv
     final_index: List[Tuple[str, str]] = []
@@ -300,6 +279,67 @@ def _apply_predict_flag(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
+# === 세부 그래프용 유틸 ===
+def get_detail_options(long_df: pd.DataFrame, group: str) -> List[str]:
+    """선택 그룹의 세부 후보를 반환. '총계'를 맨 앞에 둠."""
+    if group == "가정용":
+        base = ["취사용", "개별난방", "중앙난방"]
+        # 실제 데이터에 없는 항목은 제외
+        have = sorted([s for s in base if not long_df[(long_df["구분"]==group)&(long_df["세부"]==s)].empty])
+        # 소계/합계가 존재하면 선택지에 추가
+        extras = []
+        for add in ["소계","합계"]:
+            if not long_df[(long_df["구분"]==group)&(long_df["세부"]==add)].empty:
+                extras.append(add)
+        return ["총계"] + have + extras
+    # 그 외 그룹: 존재하는 세부값을 전부 나열(소계/합계는 뒤로)
+    vals = list(long_df[long_df["구분"]==group]["세부"].unique())
+    # '합계'만 단독으로 존재하는 그룹(예: 산업용)은 '총계'와 동일 취급
+    if vals == ["합계"] or vals == ["합계","소계"] or vals == ["소계","합계"]:
+        return ["총계"] + [v for v in vals if v!="합계"]
+    # 일반 케이스
+    details = [v for v in vals if v not in ["소계","합계"]]
+    tail = [v for v in ["소계","합계"] if v in vals]
+    details = sorted(details)
+    return ["총계"] + details + tail
+
+def build_detail_lines(long_df: pd.DataFrame, years: List[int], group: str, chosen: List[str]) -> pd.DataFrame:
+    """세부 선택들(총계/개별/소계/합계)을 라인 차트용 long 데이터로 변환."""
+    base = long_df[(long_df["연"].isin(years)) & (long_df["구분"]==group)].copy()
+    if base.empty:
+        return pd.DataFrame(columns=["연","세부표시","월","값","예측","라벨"])
+
+    frames = []
+    # 실제 세부(소계/합계 제외)
+    real_detail = base[~base["세부"].isin(["소계","합계"])]
+
+    # 1) 총계
+    if "총계" in chosen:
+        tot = (
+            real_detail.groupby(["연","월"], as_index=False)["값"].sum()
+            .assign(세부표시="총계")
+        )
+        frames.append(tot)
+
+    # 2) 개별 세부(선택된 것만)
+    for s in chosen:
+        if s in ["총계"]:
+            continue
+        sub = base[base["세부"]==s]
+        if sub.empty:
+            continue
+        sub = sub.groupby(["연","월"], as_index=False)["값"].sum()
+        sub["세부표시"] = s
+        frames.append(sub)
+
+    if not frames:
+        return pd.DataFrame(columns=["연","세부표시","월","값","예측","라벨"])
+
+    out = pd.concat(frames, ignore_index=True).sort_values(["세부표시","연","월"])
+    out = _apply_predict_flag(out)
+    out["라벨"] = out["연"].astype(str) + "년 · " + out["세부표시"]
+    return out
+
 # ─────────────────────────────────────────────────────────
 # 본문
 # ─────────────────────────────────────────────────────────
@@ -337,7 +377,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             continue
 
         raw = sheets[sheet_name]
-        order_pairs = sheet_column_order_pairs(raw)     # 엑셀 헤더 순서(컨텍스트 포함)
+        order_pairs = sheet_column_order_pairs(raw)
         long_df = to_long(raw)
 
         # 연도별 표
@@ -353,6 +393,7 @@ for sn, tab in zip(SCENARIOS, scenario):
 
         sel_years = st.multiselect("연도 선택(그래프)", YEARS, default=YEARS, key=f"yrs_{sn}")
         group_options = ["총량","가정용","영업용","업무용","산업용","열병합","연료전지","자가열전용","열전용설비용","CNG","수송용"]
+        # 상단 그래프용 그룹 버튼 (단일 선택)
         sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
                                          default="총량", key=f"grp_{sn}")
 
@@ -398,29 +439,32 @@ for sn, tab in zip(SCENARIOS, scenario):
             st.plotly_chart(fig, use_container_width=True)
 
         # ──────────────────────────────────────────────
-        # 하단: 선택 그룹의 세부 구성 그래프(가정용=취/개/중 3개 동시)
+        # 하단: 선택 그룹의 세부 구성 그래프 + 세부 버튼
         # ──────────────────────────────────────────────
         st.markdown("#### 선택 그룹의 세부 구성 그래프")
+
         if sel_group == "총량":
-            st.info("세부 그래프는 특정 그룹을 선택하면 표시돼. 예: ‘가정용’을 선택하면 취사용·개별난방·중앙난방 구성 라인이 보여.")
+            st.info("세부 그래프는 특정 그룹을 선택하면 표시돼. 예: ‘가정용’을 선택하면 총계/취사용/개별난방/중앙난방 버튼이 활성화돼.")
         else:
-            include_total = st.checkbox("소계/합계도 함께 표시", value=False, key=f"inc_total_{sn}")
-            detail_base = long_df[(long_df["연"].isin(sel_years)) & (long_df["구분"] == sel_group)].copy()
-            if not include_total:
-                # 소계/합계 제외
-                detail_base = detail_base[~detail_base["세부"].isin(["소계","합계"])]
+            # 세부 옵션 생성
+            detail_options = get_detail_options(long_df, sel_group)
+            # 버튼 UI — 환경에 따라 segmented_control의 멀티 선택이 지원되지 않을 수 있어 multiselect 병행
+            # 가능한 경우: segmented_control(selection_mode="multiple")
+            try:
+                chosen = st.segmented_control("세부 선택", detail_options,
+                                              selection_mode="multiple",
+                                              default=["총계"], key=f"detail_btn_{sn}")
+                if not isinstance(chosen, list):
+                    chosen = [chosen]
+            except Exception:
+                chosen = st.multiselect("세부 선택", detail_options, default=["총계"], key=f"detail_ms_{sn}")
 
-            if detail_base.empty:
-                st.info("해당 그룹의 세부 항목이 없습니다.")
+            # 라인 데이터 구성
+            detail_df = build_detail_lines(long_df, sel_years, sel_group, chosen)
+
+            if detail_df.empty:
+                st.info("선택한 세부에 해당하는 데이터가 없습니다.")
             else:
-                detail_df = (
-                    detail_base.groupby(["연","세부","월"], as_index=False)["값"]
-                    .sum()
-                    .sort_values(["연","세부","월"])
-                )
-                detail_df["라벨"] = detail_df["연"].astype(str) + "년 · " + detail_df["세부"].astype(str)
-                detail_df = _apply_predict_flag(detail_df)
-
                 fig2 = px.line(
                     detail_df,
                     x="월", y="값",
