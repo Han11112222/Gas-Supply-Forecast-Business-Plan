@@ -1,5 +1,9 @@
 # app.py
 # 공급량 실적 및 계획 상세 — 표는 엑셀 헤더 순서 1:1 반영, 소계/합계는 시트에 있는 것만 표시
+# 변경점:
+#  - 월별 추이 그래프 하단에 "선택 그룹의 세부 구성 그래프" 추가
+#  - 가정용 선택 시 (취사용, 개별난방, 중앙난방) 라인 동시 표시
+#  - 소계/합계 포함 여부 체크박스 제공(기본 제외)
 
 import io
 import re
@@ -209,13 +213,9 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     for c in df.columns:
         n = normalize_col(str(c))
         parsed = try_parse_explicit(n)
-        # 컨텍스트 '소계' 보정
         if parsed is None:
             if simplify_key(n) == simplify_key("소계"):
-                # 직전 구분을 찾기 위해 order_pairs를 이용
-                # 가장 마지막으로 추가된 구분을 사용
-                pass  # to_long에서는 소계도 개별 컬럼으로 처리되므로 위 order_pairs로 충분
-
+                pass
         if parsed:
             rev.setdefault(parsed, []).append(n)
 
@@ -223,7 +223,6 @@ def to_long(df: pd.DataFrame) -> pd.DataFrame:
     for g, s in order_pairs:
         cols = rev.get((g, s), [])
         if not cols:
-            # 혹시 누락됐어도 넘어감(빈 컬럼)
             continue
         v_sum = sum([pd.to_numeric(df[c], errors="coerce").fillna(0.0) for c in cols])
         tmp = base.copy()
@@ -290,6 +289,17 @@ def show_table(df: pd.DataFrame, key: str):
             s[c] = s[c].map(lambda x: format(x, ","))
         st.dataframe(s, use_container_width=True, key=f"plain_{key}")
 
+def _apply_predict_flag(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
+    df = df.copy()
+    df["예측"] = np.where(
+        (df["연"] > ps_y) | ((df["연"] == ps_y) & (df["월"] >= ps_m)),
+        "예측", "실적"
+    )
+    return df
+
 # ─────────────────────────────────────────────────────────
 # 본문
 # ─────────────────────────────────────────────────────────
@@ -349,6 +359,7 @@ for sn, tab in zip(SCENARIOS, scenario):
         plot_base = long_df[long_df["연"].isin(sel_years)].copy()
         plot_base = plot_base[plot_base["구분"] != "합계"]
 
+        # ── 상단: 그룹별 총량 추이
         if sel_group == "총량":
             plot_df = (
                 plot_base.groupby(["연","월"], as_index=False)["값"].sum()
@@ -364,11 +375,7 @@ for sn, tab in zip(SCENARIOS, scenario):
             plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
 
         if not plot_df.empty:
-            ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
-            plot_df["예측"] = np.where(
-                (plot_df["연"] > ps_y) | ((plot_df["연"] == ps_y) & (plot_df["월"] >= ps_m)),
-                "예측", "실적"
-            )
+            plot_df = _apply_predict_flag(plot_df)
 
         if plot_df.empty:
             st.info("선택 조건에 해당하는 데이터가 없습니다.")
@@ -389,3 +396,44 @@ for sn, tab in zip(SCENARIOS, scenario):
                 margin=dict(l=10, r=10, t=10, b=10),
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        # ──────────────────────────────────────────────
+        # 하단: 선택 그룹의 세부 구성 그래프(가정용=취/개/중 3개 동시)
+        # ──────────────────────────────────────────────
+        st.markdown("#### 선택 그룹의 세부 구성 그래프")
+        if sel_group == "총량":
+            st.info("세부 그래프는 특정 그룹을 선택하면 표시돼. 예: ‘가정용’을 선택하면 취사용·개별난방·중앙난방 구성 라인이 보여.")
+        else:
+            include_total = st.checkbox("소계/합계도 함께 표시", value=False, key=f"inc_total_{sn}")
+            detail_base = long_df[(long_df["연"].isin(sel_years)) & (long_df["구분"] == sel_group)].copy()
+            if not include_total:
+                # 소계/합계 제외
+                detail_base = detail_base[~detail_base["세부"].isin(["소계","합계"])]
+
+            if detail_base.empty:
+                st.info("해당 그룹의 세부 항목이 없습니다.")
+            else:
+                detail_df = (
+                    detail_base.groupby(["연","세부","월"], as_index=False)["값"]
+                    .sum()
+                    .sort_values(["연","세부","월"])
+                )
+                detail_df["라벨"] = detail_df["연"].astype(str) + "년 · " + detail_df["세부"].astype(str)
+                detail_df = _apply_predict_flag(detail_df)
+
+                fig2 = px.line(
+                    detail_df,
+                    x="월", y="값",
+                    color="라벨",
+                    line_dash="예측",
+                    category_orders={"예측": ["실적","예측"]},
+                    line_dash_map={"실적": "solid", "예측": "dash"},
+                    markers=True,
+                )
+                fig2.update_layout(
+                    xaxis=dict(dtick=1),
+                    yaxis_title="공급량",
+                    legend_title="연도/세부",
+                    margin=dict(l=10, r=10, t=10, b=10),
+                )
+                st.plotly_chart(fig2, use_container_width=True)
