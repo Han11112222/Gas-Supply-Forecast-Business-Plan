@@ -60,11 +60,11 @@ GROUP_OPTIONS: List[str] = [
     "열전용설비용",
 ]
 
-# 계획대비 월별 그래프용 색상 (모두 파란 계열)
-COLOR_PLAN = "rgba(0, 90, 200, 1)"      # 기준연도 계획
-COLOR_ACT = "rgba(0, 150, 255, 1)"     # 기준연도 실적
-COLOR_PREV = "rgba(0, 120, 230, 0.9)"  # 전년 실적
-COLOR_DIFF = "rgba(0, 80, 160, 1)"     # 증감 선
+# 계획대비 월별 그래프용 색상 (모두 푸른 계열 + 전년은 연회색)
+COLOR_PLAN = "rgba(0, 90, 200, 1)"       # 기준연도 계획
+COLOR_ACT = "rgba(0, 150, 255, 1)"      # 기준연도 실적
+COLOR_PREV = "rgba(190, 190, 190, 1)"   # 전년 실적 (연회색)
+COLOR_DIFF = "rgba(0, 80, 160, 1)"      # 증감 선
 
 
 # ─────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
 
 
 # ─────────────────────────────────────────────────────────
-# 2. 연간 계획대비 요약 (그래프 → 표)
+# 2. 연간 계획대비 요약 (그래프 → 표, Y-1 토글)
 # ─────────────────────────────────────────────────────────
 def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📊 연간 계획대비 실적 요약 — 그룹별 분석")
@@ -249,7 +249,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     else:
         default_index = len(years) - 1
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([2, 2, 1.5])
     with col1:
         sel_year = st.selectbox(
             "연도 선택(집계)",
@@ -265,37 +265,71 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             horizontal=True,
             key=f"{key_prefix}summary_mode",
         )
+    with col3:
+        include_prev = st.toggle(
+            "(Y-1) 포함", value=False, key=f"{key_prefix}summary_prev"
+        )
 
-    base = long_df[long_df["연"] == sel_year].copy()
-    if base.empty:
+    base_this = long_df[long_df["연"] == sel_year].copy()
+    if base_this.empty:
         st.info("선택한 연도에 데이터가 없어.")
         return
 
+    prev_year = sel_year - 1
+    if include_prev:
+        base_prev = long_df[
+            (long_df["연"] == prev_year) & (long_df["계획/실적"] == "실적")
+        ].copy()
+    else:
+        base_prev = pd.DataFrame([])
+
+    # ── 집계: 올 해(grp_this) + 전년(grp_prev)
     if view_mode == "그룹별 합계":
-        grp = (
-            base.groupby(["그룹", "계획/실적"], as_index=False)["값"]
+        grp_this = (
+            base_this.groupby(["그룹", "계획/실적"], as_index=False)["값"]
             .sum()
             .sort_values(["그룹", "계획/실적"])
         )
-        pivot = (
-            grp.pivot(index="그룹", columns="계획/실적", values="값")
-            .fillna(0.0)
-            .rename_axis(None, axis=1)
-        )
-        x_col = "그룹"
-    else:
-        grp = (
-            base.groupby(["그룹", "용도", "계획/실적"], as_index=False)["값"]
+        idx_col = "그룹"
+
+        if not base_prev.empty:
+            grp_prev = (
+                base_prev.groupby("그룹", as_index=False)["값"]
+                .sum()
+                .rename(columns={"값": "전년실적"})
+            )
+        else:
+            grp_prev = pd.DataFrame([])
+
+    else:  # 그룹·용도 세부
+        base_this2 = base_this.copy()
+        base_this2["그룹/용도"] = base_this2["그룹"] + " / " + base_this2["용도"]
+        grp_this = (
+            base_this2.groupby(["그룹/용도", "계획/실적"], as_index=False)["값"]
             .sum()
-            .sort_values(["그룹", "용도", "계획/실적"])
+            .sort_values(["그룹/용도", "계획/실적"])
         )
-        grp["그룹/용도"] = grp["그룹"] + " / " + grp["용도"]
-        pivot = (
-            grp.pivot(index="그룹/용도", columns="계획/실적", values="값")
-            .fillna(0.0)
-            .rename_axis(None, axis=1)
-        )
-        x_col = "그룹/용도"
+        idx_col = "그룹/용도"
+
+        if not base_prev.empty:
+            base_prev2 = base_prev.copy()
+            base_prev2["그룹/용도"] = (
+                base_prev2["그룹"] + " / " + base_prev2["용도"]
+            )
+            grp_prev = (
+                base_prev2.groupby("그룹/용도", as_index=False)["값"]
+                .sum()
+                .rename(columns={"값": "전년실적"})
+            )
+        else:
+            grp_prev = pd.DataFrame([])
+
+    # ── 요약표용 피벗 (올 해만)
+    pivot = (
+        grp_this.pivot(index=idx_col, columns="계획/실적", values="값")
+        .fillna(0.0)
+        .rename_axis(None, axis=1)
+    )
 
     for c in ["계획", "실적"]:
         if c not in pivot.columns:
@@ -308,26 +342,62 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             (pivot["실적"] / pivot["계획"]) * 100.0,
             np.nan,
         )
-
     pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
+
+    # ── 그래프용 시리즈 (계획 / 실적 / 전년실적)
+    plan_series = (
+        grp_this[grp_this["계획/실적"] == "계획"].set_index(idx_col)["값"]
+        if "계획" in grp_this["계획/실적"].values
+        else pd.Series(dtype=float)
+    )
+    act_series = (
+        grp_this[grp_this["계획/실적"] == "실적"].set_index(idx_col)["값"]
+        if "실적" in grp_this["계획/실적"].values
+        else pd.Series(dtype=float)
+    )
+    if not grp_prev.empty:
+        prev_series = grp_prev.set_index(idx_col)["전년실적"]
+    else:
+        prev_series = pd.Series(dtype=float)
+
+    cats = sorted(
+        set(plan_series.index) | set(act_series.index) | set(prev_series.index)
+    )
+    if not cats:
+        cats = list(pivot.index.astype(str))
+
+    y_plan = [plan_series.get(c, 0.0) for c in cats]
+    y_act = [act_series.get(c, 0.0) for c in cats]
+    y_prev = [prev_series.get(c, 0.0) for c in cats] if not prev_series.empty else None
 
     # (1) 그래프
     st.markdown("#### 📊 선택 연도 그룹별 계획·실적 막대그래프")
 
-    bar_df = grp.copy()
-    if view_mode == "그룹·용도 세부":
-        bar_df["그룹/용도"] = bar_df["그룹"] + " / " + bar_df["용도"]
-
-    fig_bar = px.bar(
-        bar_df,
-        x=x_col,
-        y="값",
-        color="계획/실적",
-        barmode="group",
+    fig_bar = go.Figure()
+    fig_bar.add_bar(
+        x=cats,
+        y=y_plan,
+        name=f"{sel_year} 계획",
+        marker_color=COLOR_PLAN,
     )
-    fig_bar.update_traces(width=0.4, selector=dict(type="bar"))
+    fig_bar.add_bar(
+        x=cats,
+        y=y_act,
+        name=f"{sel_year} 실적",
+        marker_color=COLOR_ACT,
+    )
+    if include_prev and y_prev is not None:
+        fig_bar.add_bar(
+            x=cats,
+            y=y_prev,
+            name=f"{prev_year} 실적",
+            marker_color=COLOR_PREV,  # Y-1은 연회색, 항상 맨 오른쪽
+        )
+
+    fig_bar.update_traces(width=0.35, selector=dict(type="bar"))
     fig_bar.update_layout(
-        xaxis_title=x_col,
+        barmode="group",
+        xaxis_title=idx_col,
         yaxis_title=f"연간 합계 ({unit_label})",
         margin=dict(l=10, r=10, t=10, b=10),
     )
@@ -485,7 +555,7 @@ def plan_vs_actual_usage_section(
 
     fig = go.Figure()
 
-    # ① 기준연도 계획/실적 막대 (파란 계열 색상)
+    # ① 기준연도 계획/실적 막대 (푸른 계열)
     for status, name, color in [
         ("계획", f"{sel_year}년 계획", COLOR_PLAN),
         ("실적", f"{sel_year}년 실적", COLOR_ACT),
@@ -501,7 +571,7 @@ def plan_vs_actual_usage_section(
             marker_color=color,
         )
 
-    # ② (옵션) 전년 실적 막대
+    # ② (옵션) 전년 실적 막대 — 항상 마지막 trace, 연회색
     if include_prev and not df_prev.empty:
         prev_group = (
             df_prev.groupby("월", as_index=False)["값"]
@@ -516,7 +586,7 @@ def plan_vs_actual_usage_section(
             marker_color=COLOR_PREV,
         )
 
-    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축, 파란 계열 색상
+    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축
     if len(diff_series) > 0:
         fig.add_scatter(
             x=months_all,
