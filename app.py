@@ -140,11 +140,9 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         st.info("연도 정보가 없습니다.")
         return
 
-    # 디폴트는 2025년, 없으면 마지막 연도
-    if 2025 in years:
-        default_years = [2025]
-    else:
-        default_years = [years[-1]]
+    # 디폴트: 2021~2025 중, 실제 존재하는 연도만 선택
+    preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
+    default_years = preferred_years if preferred_years else [years[-1]]
 
     sel_years = st.multiselect(
         "연도 선택(그래프)",
@@ -394,9 +392,12 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             marker_color=COLOR_PREV,  # Y-1은 연회색, 항상 맨 오른쪽
         )
 
-    fig_bar.update_traces(width=0.35, selector=dict(type="bar"))
+    # 막대 폭 줄여서 서로 안 겹치게
+    fig_bar.update_traces(width=0.25, selector=dict(type="bar"))
     fig_bar.update_layout(
         barmode="group",
+        bargap=0.15,
+        bargroupgap=0.2,
         xaxis_title=idx_col,
         yaxis_title=f"연간 합계 ({unit_label})",
         margin=dict(l=10, r=10, t=10, b=10),
@@ -586,16 +587,20 @@ def plan_vs_actual_usage_section(
             marker_color=COLOR_PREV,
         )
 
-    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축
+    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축 + 숫자 라벨
     if len(diff_series) > 0:
+        diff_text = [f"{v:,.0f}" for v in diff_series.values]
         fig.add_scatter(
             x=months_all,
             y=diff_series.values,
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="증감(실적-계획)",
             yaxis="y2",
             line=dict(color=COLOR_DIFF, width=2),
             marker=dict(color=COLOR_DIFF),
+            text=diff_text,
+            textposition="top center",
+            textfont=dict(size=11),
         )
 
     fig.update_layout(
@@ -655,10 +660,9 @@ def half_year_stacked_section(
         st.info("연도 정보가 없습니다.")
         return
 
-    if 2025 in years:
-        default_years = [2025]
-    else:
-        default_years = [years[-1]]
+    # 디폴트: 2021~2025 중, 실제 존재하는 연도만 선택
+    preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
+    default_years = preferred_years if preferred_years else [years[-1]]
 
     sel_years = st.multiselect(
         "연도 선택(스택 그래프)",
