@@ -372,104 +372,113 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 특이사항 (핵심 이슈 1~2건)
+    # ── 특이사항 (핵심 이슈 1~2건)  ※ Arrow 안 타게 HTML로 출력
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
         st.info("선택 연월에 해당하는 데이터가 없습니다.")
         return
 
-    det = base_this.copy()
-    det["그룹/용도"] = det["그룹"] + " / " + det["용도"]
+    try:
+        det = base_this.copy()
+        det["그룹/용도"] = det["그룹"] + " / " + det["용도"]
 
-    pivot = (
-        det.pivot_table(
-            index="그룹/용도", columns="계획/실적", values="값", aggfunc="sum"
-        )
-        .fillna(0.0)
-        .rename_axis(None, axis=1)
-    )
-
-    for c in ["계획", "실적"]:
-        if c not in pivot.columns:
-            pivot[c] = 0.0
-
-    pivot["계획대비차이"] = pivot["실적"] - pivot["계획"]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pivot["계획달성률(%)"] = np.where(
-            pivot["계획"] != 0,
-            (pivot["실적"] / pivot["계획"]) * 100.0,
-            np.nan,
+        pivot = (
+            det.pivot_table(
+                index="그룹/용도", columns="계획/실적", values="값", aggfunc="sum"
+            )
+            .fillna(0.0)
+            .rename_axis(None, axis=1)
         )
 
-    if has_prev:
-        prev_only = base_prev[base_prev["계획/실적"] == "실적"].copy()
-        prev_only["그룹/용도"] = prev_only["그룹"] + " / " + prev_only["용도"]
-        prev_grp = (
-            prev_only.groupby("그룹/용도", as_index=False)["값"]
-            .sum()
-            .rename(columns={"값": "전년실적"})
-        )
-        pivot = pivot.merge(prev_grp, on="그룹/용도", how="left")
-    else:
-        pivot["전년실적"] = np.nan
+        for c in ["계획", "실적"]:
+            if c not in pivot.columns:
+                pivot[c] = 0.0
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pivot["전년대비차이"] = pivot["실적"] - pivot["전년실적"]
-        pivot["전년대비증감률(%)"] = np.where(
-            pivot["전년실적"] != 0,
-            (pivot["실적"] / pivot["전년실적"]) * 100.0,
-            np.nan,
-        )
+        pivot["계획대비차이"] = pivot["실적"] - pivot["계획"]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pivot["계획달성률(%)"] = np.where(
+                pivot["계획"] != 0,
+                (pivot["실적"] / pivot["계획"]) * 100.0,
+                np.nan,
+            )
 
-    worst_plan = pivot[pivot["계획"] > 0].sort_values("계획달성률(%)").head(1)
-    worst_prev = pivot[~pivot["전년실적"].isna() & (pivot["전년실적"] > 0)].sort_values(
-        "전년대비증감률(%)"
-    ).head(1)
+        if has_prev:
+            prev_only = base_prev[base_prev["계획/실적"] == "실적"].copy()
+            prev_only["그룹/용도"] = prev_only["그룹"] + " / " + prev_only["용도"]
+            prev_grp = (
+                prev_only.groupby("그룹/용도", as_index=False)["값"]
+                .sum()
+                .rename(columns={"값": "전년실적"})
+            )
+            pivot = pivot.merge(prev_grp, on="그룹/용도", how="left")
+        else:
+            pivot["전년실적"] = np.nan
 
-    core_issues = pd.concat([worst_plan, worst_prev])
-    core_issues = core_issues[~core_issues.index.duplicated(keep="first")].head(2)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pivot["전년대비차이"] = pivot["실적"] - pivot["전년실적"]
+            pivot["전년대비증감률(%)"] = np.where(
+                pivot["전년실적"] != 0,
+                (pivot["실적"] / pivot["전년실적"]) * 100.0,
+                np.nan,
+            )
 
-    if core_issues.empty:
+        worst_plan = pivot[pivot["계획"] > 0].sort_values("계획달성률(%)").head(1)
+        worst_prev = pivot[~pivot["전년실적"].isna() & (pivot["전년실적"] > 0)].sort_values(
+            "전년대비증감률(%)"
+        ).head(1)
+
+        core_issues = pd.concat([worst_plan, worst_prev])
+        core_issues = core_issues[~core_issues.index.duplicated(keep="first")].head(2)
+
+        if core_issues.empty:
+            st.markdown(
+                "<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>",
+                unsafe_allow_html=True,
+            )
+            return
+
+        core_issues = core_issues.reset_index().rename(columns={"index": "그룹/용도"})
+
+        show_cols = [
+            "그룹/용도",
+            "계획",
+            "실적",
+            "계획대비차이",
+            "계획달성률(%)",
+            "전년실적",
+            "전년대비차이",
+            "전년대비증감률(%)",
+        ]
+        disp = core_issues[show_cols].copy()
+
+        num_cols = ["계획", "실적", "계획대비차이", "전년실적", "전년대비차이"]
+        rate_cols = ["계획달성률(%)", "전년대비증감률(%)"]
+
+        for c in num_cols:
+            if c in disp.columns:
+                disp[c] = disp[c].apply(fmt_num_safe)
+        for c in rate_cols:
+            if c in disp.columns:
+                disp[c] = disp[c].apply(fmt_rate)
+
+        disp = disp.astype(str)
+
+        html_table = disp.to_html(index=False, escape=False)
         st.markdown(
-            "<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>",
+            f"""
+            <div style="border-radius:12px; overflow-x:auto; border:1px solid #eee;">
+                {html_table}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-        return
 
-    core_issues = core_issues.reset_index().rename(columns={"index": "그룹/용도"})
-
-    show_cols = [
-        "그룹/용도",
-        "계획",
-        "실적",
-        "계획대비차이",
-        "계획달성률(%)",
-        "전년실적",
-        "전년대비차이",
-        "전년대비증감률(%)",
-    ]
-    core_issues = core_issues[show_cols]
-
-    # ✅ Styler 제거 + Arrow 안전 출력(전 컬럼 string)
-    disp = core_issues.copy()
-    num_cols = ["계획", "실적", "계획대비차이", "전년실적", "전년대비차이"]
-    rate_cols = ["계획달성률(%)", "전년대비증감률(%)"]
-
-    for c in num_cols:
-        if c in disp.columns:
-            disp[c] = disp[c].apply(fmt_num_safe)
-    for c in rate_cols:
-        if c in disp.columns:
-            disp[c] = disp[c].apply(fmt_rate)
-
-    disp = disp.astype(str)
-
-    st.dataframe(
-        disp,
-        use_container_width=True,
-        hide_index=True
-    )
+    except Exception:
+        st.markdown(
+            "<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ─────────────────────────────────────────────────────────
@@ -684,16 +693,8 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         )
     pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
 
-    plan_series = (
-        grp_this[grp_this["계획/실적"] == "계획"].set_index(idx_col)["값"]
-        if "계획" in grp_this["계획/실적"].values
-        else pd.Series(dtype=float)
-    )
-    act_series = (
-        grp_this[grp_this["계획/실적"] == "실적"].set_index(idx_col)["값"]
-        if "실적" in grp_this["계획/실적"].values
-        else pd.Series(dtype=float)
-    )
+    plan_series = grp_this[grp_this["계획/실적"] == "계획"].set_index(idx_col)["값"]
+    act_series = grp_this[grp_this["계획/실적"] == "실적"].set_index(idx_col)["값"]
 
     if not base_prev.empty:
         prev_series = grp_prev.set_index(idx_col)["전년실적"]
