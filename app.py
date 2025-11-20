@@ -457,7 +457,15 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     for c in rate_cols:
         disp[c] = disp[c].apply(fmt_rate)
 
-    st.dataframe(disp, use_container_width=True)
+    # ✅ Arrow 변환 에러 방지: 전 컬럼 문자열 캐스팅
+disp = disp.astype(str)
+
+st.dataframe(
+    disp,
+    use_container_width=True,
+    hide_index=True
+)
+
 
 
 # ─────────────────────────────────────────────────────────
