@@ -133,7 +133,7 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 # ─────────────────────────────────────────────────────────
-# 월별 추이 그래프 (용도 선택 가능) — 복구
+# 월별 추이 그래프 (용도 선택 가능)
 # ─────────────────────────────────────────────────────────
 def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📈 월별 추이 그래프")
@@ -302,7 +302,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             np.nan,
         )
 
-    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
+    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)")]
 
     st.markdown("##### 🔢 연간 요약 표")
     styled = pivot.style.format(
@@ -485,10 +485,10 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
 
 
 # ─────────────────────────────────────────────────────────
-# 실적 중심: 기간별 용도 누적 (스택) + 가정용/합계 라인
+# 실적 중심: 기간별 용도 누적 (스택) + 가정용/합계 라인 + 숫자표시
 # ─────────────────────────────────────────────────────────
 def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
-    """1H/2H/연간 용도별 '실적' 스택 + 가정용/합계 라인."""
+    """1H/2H/연간 용도별 '실적' 스택 + 가정용/합계 라인 + 숫자 라벨."""
     st.markdown("### 🧱 기간별 용도 누적 실적 (스택형 막대 + 라인)")
 
     if long_df.empty:
@@ -554,22 +554,33 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     home = grp[grp["그룹"] == "가정용"].groupby("연", as_index=False)["값"].sum()
     home.rename(columns={"값": "가정용"}, inplace=True)
 
+    # 합계 라인 + 숫자 라벨
+    if not total.empty:
+        total_text = total["합계"].apply(lambda v: f"{v:,.0f}")
+        fig.add_scatter(
+            x=total["연"],
+            y=total["합계"],
+            mode="lines+markers+text",
+            name="합계",
+            line=dict(dash="dash"),
+            text=total_text,
+            textposition="top center",
+            textfont=dict(size=11),
+        )
+
+    # 가정용 라인 + 숫자 라벨
     if not home.empty:
+        home_text = home["가정용"].apply(lambda v: f"{v:,.0f}")
         fig.add_scatter(
             x=home["연"],
             y=home["가정용"],
-            mode="lines+markers",
+            mode="lines+markers+text",
             name="가정용",
             line=dict(dash="dot"),
+            text=home_text,
+            textposition="top center",
+            textfont=dict(size=11),
         )
-
-    fig.add_scatter(
-        x=total["연"],
-        y=total["합계"],
-        mode="lines+markers",
-        name="합계",
-        line=dict(dash="dash"),
-    )
 
     fig.update_layout(
         title=f"{period_label} 용도별 실적 판매량 (누적)",
@@ -590,17 +601,6 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     summary["합계"] = summary.sum(axis=1)
     st.dataframe(
         summary.style.format("{:,.0f}"),
-        use_container_width=True,
-    )
-
-    # 가정용·합계만 따로 보기
-    st.markdown("##### 🔢 가정용 · 합계 요약")
-    ga = pd.DataFrame(index=summary.index)
-    if "가정용" in summary.columns:
-        ga["가정용"] = summary["가정용"]
-    ga["합계"] = summary["합계"]
-    st.dataframe(
-        ga.style.format("{:,.0f}"),
         use_container_width=True,
     )
 
