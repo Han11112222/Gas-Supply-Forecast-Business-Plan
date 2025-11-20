@@ -302,7 +302,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             np.nan,
         )
 
-    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)")]
+    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
 
     st.markdown("##### 🔢 연간 요약 표")
     styled = pivot.style.format(
