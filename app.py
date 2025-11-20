@@ -23,7 +23,6 @@ def set_korean_font():
             mpl.rcParams["font.family"] = "NanumGothic"
             mpl.rcParams["axes.unicode_minus"] = False
         except Exception:
-            # 폰트 적용 실패해도 앱은 계속 동작
             pass
 
 
@@ -131,6 +130,106 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     if ("계획_열량" in sheets) and ("실적_열량" in sheets):
         long_dict["열량"] = make_long(sheets["계획_열량"], sheets["실적_열량"])
     return long_dict
+
+
+# ─────────────────────────────────────────────────────────
+# 월별 추이 그래프 (용도 선택 가능) — 복구
+# ─────────────────────────────────────────────────────────
+def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
+    st.markdown("### 📈 월별 추이 그래프")
+
+    if long_df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    years = sorted(long_df["연"].unique().tolist())
+    default_years = years[-3:] if len(years) > 3 else years
+
+    sel_years = st.multiselect(
+        "연도 선택(그래프)",
+        options=years,
+        default=default_years,
+        key=f"{key_prefix}trend_years",
+    )
+    if not sel_years:
+        st.info("표시할 연도를 한 개 이상 선택해 줘.")
+        return
+
+    # 그룹 선택 UI (총량/가정용/산업용 등)
+    try:
+        sel_group = st.segmented_control(
+            "그룹 선택",
+            GROUP_OPTIONS,
+            selection_mode="single",
+            default="총량",
+            key=f"{key_prefix}trend_group",
+        )
+    except Exception:
+        sel_group = st.radio(
+            "그룹 선택",
+            GROUP_OPTIONS,
+            index=0,
+            horizontal=True,
+            key=f"{key_prefix}trend_group_radio",
+        )
+
+    base = long_df[long_df["연"].isin(sel_years)].copy()
+
+    if sel_group == "총량":
+        plot_df = (
+            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["연", "월", "계획/실적"])
+        )
+        plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["계획/실적"]
+    else:
+        base = base[base["그룹"] == sel_group]
+        plot_df = (
+            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["연", "월", "계획/실적"])
+        )
+        plot_df["라벨"] = (
+            plot_df["연"].astype(str)
+            + "년 · "
+            + sel_group
+            + " · "
+            + plot_df["계획/실적"]
+        )
+
+    if plot_df.empty:
+        st.info("선택 조건에 해당하는 데이터가 없어.")
+        return
+
+    fig = px.line(
+        plot_df,
+        x="월",
+        y="값",
+        color="라벨",
+        line_dash="계획/실적",
+        category_orders={"계획/실적": ["실적", "계획"]},
+        line_dash_map={"실적": "solid", "계획": "dash"},
+        markers=True,
+    )
+    fig.update_layout(
+        xaxis=dict(dtick=1),
+        yaxis_title=f"판매량 ({unit_label})",
+        legend_title="연도 / 구분",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 숫자 박스 (월별 수치표)
+    st.markdown("##### 🔢 월별 수치표")
+    table = (
+        plot_df.pivot_table(index="월", columns="라벨", values="값", aggfunc="sum")
+        .sort_index()
+        .fillna(0.0)
+    )
+    st.dataframe(
+        table.style.format("{:,.0f}"),
+        use_container_width=True,
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -323,7 +422,7 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         st.info("선택한 연도의 데이터가 없어.")
         return
 
-    # 계획/실적 시리즈
+    # 계획/실적 시리즈 정렬 후 증감 계산
     plan_series = (
         bars[bars["계획/실적"] == "계획"].set_index("월")["값"].sort_index()
     )
@@ -412,12 +511,12 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     period = st.radio(
         "기간",
         ["연간", "상반기(1~6월)", "하반기(7~12월)"],
-        index=1,
+        index=0,
         horizontal=True,
         key=f"{key_prefix}period",
     )
 
-    # 실적만 사용 (계획 선택 제거)
+    # 실적만 사용
     base = long_df[
         (long_df["연"].isin(sel_years)) & (long_df["계획/실적"] == "실적")
     ].copy()
@@ -445,7 +544,7 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         color="그룹",
         barmode="stack",
     )
-    # 막대 폭 절반 정도로
+    # 막대 폭 줄이기
     fig.update_traces(width=0.4, selector=dict(type="bar"))
 
     # 라인용 데이터: 전체 합계, 가정용 합계
@@ -481,7 +580,7 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 숫자 박스 (연도·그룹별 누적 수치표)
+    # 숫자 박스 (연도·그룹별 누적 실적 수치표)
     st.markdown("##### 🔢 연도·그룹별 누적 실적 수치")
     summary = (
         grp.pivot(index="연", columns="그룹", values="값")
@@ -494,46 +593,14 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         use_container_width=True,
     )
 
-
-# ─────────────────────────────────────────────────────────
-# 실적 중심: 연도별 총 공급량 (실적만)
-# ─────────────────────────────────────────────────────────
-def total_volume_by_year_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
-    st.markdown("### 📦 연도별 총 실적 공급량")
-
-    if long_df.empty:
-        st.info("데이터가 없습니다.")
-        return
-
-    year_tot = (
-        long_df[long_df["계획/실적"] == "실적"]
-        .groupby("연", as_index=False)["값"]
-        .sum()
-        .sort_values(["연"])
-    )
-
-    fig = px.bar(
-        year_tot,
-        x="연",
-        y="값",
-    )
-    fig.update_traces(width=0.4, selector=dict(type="bar"))
-    fig.update_layout(
-        xaxis_title="연도",
-        yaxis_title=f"총 실적 공급량 ({unit_label})",
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 숫자 박스 (연도별 실적 표)
-    st.markdown("##### 🔢 연도별 총 실적 표")
-    table = (
-        year_tot.set_index("연")[["값"]]
-        .rename(columns={"값": "실적"})
-        .sort_index()
-    )
+    # 가정용·합계만 따로 보기
+    st.markdown("##### 🔢 가정용 · 합계 요약")
+    ga = pd.DataFrame(index=summary.index)
+    if "가정용" in summary.columns:
+        ga["가정용"] = summary["가정용"]
+    ga["합계"] = summary["합계"]
     st.dataframe(
-        table.style.format("{:,.0f}"),
+        ga.style.format("{:,.0f}"),
         use_container_width=True,
     )
 
@@ -576,7 +643,7 @@ if "열량" in long_dict:
 
 if not tab_labels:
     st.info(
-        "유효한 시트를 찾지 못했어. 파일에 '계획_부피', '실적_부피' (또는 '계획_열량', '실적_열량') 시트가 있는지 한 번만 체크해 줘."
+        "유효한 시트를 찾지 못했어. 파일에 '계획_부피', '실적_부피' (또는 '계획_열량', '실적_열량') 시트가 있는지 한 번 체크해 줘."
     )
 else:
     tabs = st.tabs(tab_labels)
@@ -591,10 +658,10 @@ else:
                 unit = "MJ"
                 prefix = "mj_"
 
-            # ── 상단: 실적 중심 분석 ──
+            # ── 상단: 실적 분석 ──
             st.markdown("## 📊 실적 분석")
+            monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix)
             half_year_stacked_section(df_long, unit_label=unit, key_prefix=prefix + "stack_")
-            total_volume_by_year_section(df_long, unit_label=unit, key_prefix=prefix + "total_")
 
             st.markdown("---")
 
