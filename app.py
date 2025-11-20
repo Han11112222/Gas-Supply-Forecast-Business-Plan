@@ -1,15 +1,8 @@
-# app.py
-# 공급량 실적 및 계획 상세 — 표는 엑셀 헤더 순서 1:1 반영, 소계/합계는 시트에 있는 것만 표시
-# 변경점:
-#  - 하단 "선택 그룹의 세부 구성 그래프"에 세부 버튼(총계/개별 세부) 추가
-#  - 가정용 기본 세트: 총계, 취사용, 개별난방, 중앙난방
-#  - 총계는 소계/합계가 아닌 실제 세부합(소계는 별도 선택 가능)
+# app.py — 도시가스 판매량 계획 / 실적 분석 (부피·열량)
 
 import io
-import re
-import unicodedata
 from pathlib import Path
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -17,8 +10,9 @@ import streamlit as st
 import matplotlib as mpl
 import plotly.express as px
 
+
 # ─────────────────────────────────────────────────────────
-# 폰트
+# 폰트 설정
 # ─────────────────────────────────────────────────────────
 def set_korean_font():
     ttf = Path(__file__).parent / "NanumGothic-Regular.ttf"
@@ -28,456 +22,396 @@ def set_korean_font():
             mpl.rcParams["font.family"] = "NanumGothic"
             mpl.rcParams["axes.unicode_minus"] = False
         except Exception:
+            # 폰트 설정 실패해도 앱 동작에는 지장 없도록
             pass
 
+
 set_korean_font()
-st.set_page_config(page_title="공급량 실적 및 계획 상세", layout="wide")
+st.set_page_config(page_title="도시가스 판매량 계획/실적 분석", layout="wide")
+
 
 # ─────────────────────────────────────────────────────────
-# 상수
+# 상수 · 기본 설정
 # ─────────────────────────────────────────────────────────
-DEFAULT_XLSX = "사업계획최종.xlsx"
-DATE_COL_CANDIDATES = ["일자", "날짜", "date", "Date", "일", "기준일"]
-PREDICT_START = {"year": 2025, "month": 11}  # 이 시점부터 예측(점선)
+DEFAULT_XLSX = "판매량(계획_실적).xlsx"
 
-GROUP_NAMES = [
-    "가정용", "영업용", "업무용", "산업용",
-    "열병합", "연료전지", "자가열전용", "열전용설비용",
-    "CNG", "수송용", "합계"
-]
-
-# 명시 매핑(정확히 일치할 때만)
-COL_TO_GROUP: Dict[str, Tuple[str, str]] = {
-    # 가정용
-    "취사용": ("가정용", "취사용"),
-    "개별난방": ("가정용", "개별난방"),
-    "중앙난방": ("가정용", "중앙난방"),
-    "가정용소계": ("가정용", "소계"),
-    "가정용 소계": ("가정용", "소계"),
-    "소계(가정용)": ("가정용", "소계"),
-    # 영업/업무/산업
-    "일반용": ("영업용", "일반용"),
-    "일반용1": ("영업용", "일반용1"),
-    "일반용2": ("영업용", "일반용2"),
-    "업무난방": ("업무용", "업무난방"),
-    "냉난방": ("업무용", "냉난방용"),
-    "냉난방용": ("업무용", "냉난방용"),
-    "주한미군": ("업무용", "주한미군"),
-    "업무용소계": ("업무용", "소계"),
-    "업무용 소계": ("업무용", "소계"),
-    "산업용": ("산업용", "합계"),
-    # 기타
-    "열병합": ("열병합", "합계"),
-    "열병합용": ("열병합", "용"),
-    "연료전지": ("연료전지", "합계"),
-    "자가열전용": ("자가열전용", "합계"),
-    "자가열병합": ("자가열전용", "합계"),
-    "열전용설비용": ("열전용설비용", "합계"),
-    "CNG": ("CNG", "합계"),
-    # 수송용
-    "BIO": ("수송용", "BIO"),
-    "수송용소계": ("수송용", "소계"),
-    "수송용 소계": ("수송용", "소계"),
-    # 전체
-    "합계": ("합계", "합계"),
+# 용도(컬럼) → 그룹(가정용/영업용/업무용/산업용/수송용/열병합/연료전지/열전용설비용) 매핑
+USE_COL_TO_GROUP: Dict[str, str] = {
+    "취사용": "가정용",
+    "개별난방용": "가정용",
+    "중앙난방용": "가정용",
+    "자가열전용": "가정용",
+    # "소 계" 는 위 네 개의 합계라서 총량 계산에서 중복 방지를 위해 제외
+    "일반용": "영업용",
+    "업무난방용": "업무용",
+    "냉방용": "업무용",
+    "주한미군": "업무용",
+    "산업용": "산업용",
+    "수송용(CNG)": "수송용",
+    "수송용(BIO)": "수송용",
+    "열병합용1": "열병합",
+    "열병합용2": "열병합",
+    # "열병합용" 역시 1,2 합계라서 제외
+    "연료전지용": "연료전지",
+    "열전용설비용": "열전용설비용",
 }
 
-MONTHS = list(range(1, 13))
-YEARS  = [2024, 2025, 2026, 2027, 2028]
-SCENARIOS = ["데이터", "best", "conservative"]
+GROUP_OPTIONS: List[str] = [
+    "총량",
+    "가정용",
+    "영업용",
+    "업무용",
+    "산업용",
+    "수송용",
+    "열병합",
+    "연료전지",
+    "열전용설비용",
+]
 
 # ─────────────────────────────────────────────────────────
-# 유틸
+# 데이터 유틸
 # ─────────────────────────────────────────────────────────
-def normalize_col(s: str) -> str:
-    if not isinstance(s, str):
-        return s
-    return unicodedata.normalize("NFC", s).strip()
-
-def simplify_key(s: str) -> str:
-    s = normalize_col(s)
-    return re.sub(r"[ \t/,_\-.]+", "", s).lower()
-
-def try_parse_explicit(raw_name: str) -> Optional[Tuple[str, str]]:
-    n = normalize_col(raw_name)
-    key = simplify_key(n)
-
-    for k, (g, s) in COL_TO_GROUP.items():
-        if simplify_key(k) == key:
-            return (g, s)
-
-    parts = re.split(r"[ \t/,_\-.]+", n)
-    if len(parts) >= 2:
-        g_cand = parts[0]
-        s_cand = " ".join(parts[1:])
-        if g_cand in GROUP_NAMES:
-            return (g_cand, s_cand)
-
-    for g in GROUP_NAMES:
-        if n.startswith(g):
-            rest = n[len(g):].strip()
-            if rest:
-                return (g, rest)
-    return None
-
-@st.cache_data(show_spinner=False)
-def read_excel_all_sheets(content: bytes) -> Dict[str, pd.DataFrame]:
-    xls = pd.ExcelFile(io.BytesIO(content), engine="openpyxl")
-    out: Dict[str, pd.DataFrame] = {}
-    for sn in xls.sheet_names:
-        df = xls.parse(sn)
-        df.columns = [normalize_col(str(c)) for c in df.columns]
-        out[sn] = df
-    return out
-
-def detect_date_col(df: pd.DataFrame) -> Optional[str]:
-    cols = [normalize_col(str(c)) for c in df.columns]
-    for c in DATE_COL_CANDIDATES:
-        if normalize_col(c) in cols:
-            return normalize_col(c)
-    for c in df.columns:
-        if np.issubdtype(df[c].dtype, np.datetime64):
-            return normalize_col(str(c))
-    return None
-
-def ensure_year_month(df: pd.DataFrame) -> pd.DataFrame:
+def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
+    """공통 컬럼 정리(연·월 숫자 변환, 불필요 컬럼 제거)."""
     out = df.copy()
-    date_col = detect_date_col(out)
-    if date_col and date_col in out.columns:
-        out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-        out["연"] = out[date_col].dt.year.astype("Int64")
-        out["월"] = out[date_col].dt.month.astype("Int64")
-    else:
-        if "연" in out.columns:
-            out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
-        if "월" in out.columns:
-            out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
+    # 날짜 인덱스 성격의 첫 컬럼(예: Unnamed: 0)은 버림
+    if "Unnamed: 0" in out.columns:
+        out = out.drop(columns=["Unnamed: 0"])
+    out["연"] = pd.to_numeric(out["연"], errors="coerce").astype("Int64")
+    out["월"] = pd.to_numeric(out["월"], errors="coerce").astype("Int64")
     return out
 
-def sheet_column_order_pairs(raw_df: pd.DataFrame) -> List[Tuple[str, str]]:
-    order: List[Tuple[str, str]] = []
-    seen = set()
-    current_group: Optional[str] = None
-    skip_keys = {simplify_key(c) for c in ["연", "월"] + DATE_COL_CANDIDATES}
 
-    for raw in raw_df.columns:
-        n = normalize_col(str(raw))
-        key = simplify_key(n)
-        if key in skip_keys:
-            continue
+def make_long(plan_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    계획_부피 / 실적_부피 와 같은 wide 형식을
+    연·월·그룹·용도·계획/실적·값 long 포맷으로 변환.
+    """
+    plan_df = _clean_base(plan_df)
+    actual_df = _clean_base(actual_df)
 
-        parsed = try_parse_explicit(n)
-        if parsed is None:
-            if simplify_key(n) == simplify_key("소계") and current_group:
-                parsed = (current_group, "소계")
-            elif simplify_key(n) == simplify_key("합계"):
-                parsed = ("합계", "합계")
-
-        if parsed:
-            g, s = parsed
-            current_group = g
-            if (g, s) not in seen:
-                order.append((g, s))
-                seen.add((g, s))
-    return order
-
-def to_long(df: pd.DataFrame) -> pd.DataFrame:
-    df = ensure_year_month(df)
-    if ("연" not in df.columns) or ("월" not in df.columns):
-        return pd.DataFrame(columns=["구분","세부","연","월","값"])
-
-    base = df[["연","월"]].copy()
     records = []
-
-    order_pairs = sheet_column_order_pairs(df)
-    rev: Dict[Tuple[str,str], List[str]] = {}
-    for c in df.columns:
-        n = normalize_col(str(c))
-        parsed = try_parse_explicit(n)
-        if parsed is None:
-            if simplify_key(n) == simplify_key("소계"):
-                pass
-        if parsed:
-            rev.setdefault(parsed, []).append(n)
-
-    for g, s in order_pairs:
-        cols = rev.get((g, s), [])
-        if not cols:
-            continue
-        v_sum = sum([pd.to_numeric(df[c], errors="coerce").fillna(0.0) for c in cols])
-        tmp = base.copy()
-        tmp["구분"], tmp["세부"], tmp["값"] = g, s, v_sum
-        records.append(tmp)
+    for label, df in [("계획", plan_df), ("실적", actual_df)]:
+        for col, group in USE_COL_TO_GROUP.items():
+            if col not in df.columns:
+                continue
+            base = df[["연", "월"]].copy()
+            base["그룹"] = group
+            base["용도"] = col
+            base["계획/실적"] = label
+            base["값"] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+            records.append(base)
 
     if not records:
-        return pd.DataFrame(columns=["구분","세부","연","월","값"])
+        return pd.DataFrame(columns=["연", "월", "그룹", "용도", "계획/실적", "값"])
 
     long_df = pd.concat(records, ignore_index=True)
-    long_df["연"] = pd.to_numeric(long_df["연"], errors="coerce").astype("Int64")
-    long_df["월"] = pd.to_numeric(long_df["월"], errors="coerce").astype("Int64")
-    long_df = long_df.dropna(subset=["연","월"])
+    long_df = long_df.dropna(subset=["연", "월"])
+    long_df["연"] = long_df["연"].astype(int)
+    long_df["월"] = long_df["월"].astype(int)
     return long_df
 
-def reorder_by_sheet_columns(pv: pd.DataFrame, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    if pv.empty:
-        return pv
-    final_index: List[Tuple[str, str]] = []
-    for pair in order_pairs:
-        if pair in pv.index:
-            final_index.append(pair)
-    for idx in pv.index:
-        if idx not in final_index:
-            final_index.append(idx)
-    return pv.reindex(final_index)
 
-def make_pivot(long_df: pd.DataFrame, year: int, order_pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    view = long_df[long_df["연"] == year].copy()
-    if view.empty:
-        idx = pd.MultiIndex.from_tuples([], names=["구분","세부"])
-        return pd.DataFrame(index=idx, columns=MONTHS).fillna(0.0)
-
-    pv = (
-        view.groupby(["구분","세부","월"], as_index=False)["값"]
-        .sum()
-        .pivot_table(index=["구분","세부"], columns="월", values="값", aggfunc="sum")
-        .reindex(columns=MONTHS)
-        .fillna(0.0)
-    )
-    pv.columns.name = ""
-    pv = reorder_by_sheet_columns(pv, order_pairs)
-    return pv
-
-def style_table(pivot: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    p = pivot.copy()
-    p.index = p.index.map(lambda t: " / ".join(map(str, t)) if isinstance(t, tuple) else str(t))
-    styler = p.style.format({c: "{:,.0f}" for c in p.columns}, na_rep="0")
-    def highlight(row):
-        name = str(row.name)
-        if name.endswith(" / 소계") or name.endswith("합계"):
-            return ["background-color: rgba(0,0,0,0.10)"] * len(row)
-        return ["" for _ in row]
-    return styler.apply(highlight, axis=1)
-
-def show_table(df: pd.DataFrame, key: str):
-    try:
-        st.dataframe(style_table(df), use_container_width=True, key=f"sty_{key}")
-    except Exception:
-        s = df.copy()
-        for c in s.columns:
-            s[c] = pd.to_numeric(s[c], errors="coerce").fillna(0).round(0).astype(int)
-            s[c] = s[c].map(lambda x: format(x, ","))
-        st.dataframe(s, use_container_width=True, key=f"plain_{key}")
-
-def _apply_predict_flag(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    ps_y, ps_m = PREDICT_START["year"], PREDICT_START["month"]
-    df = df.copy()
-    df["예측"] = np.where(
-        (df["연"] > ps_y) | ((df["연"] == ps_y) & (df["월"] >= ps_m)),
-        "예측", "실적"
-    )
-    return df
-
-# === 세부 그래프용 유틸 ===
-def get_detail_options(long_df: pd.DataFrame, group: str) -> List[str]:
-    """선택 그룹의 세부 후보를 반환. '총계'를 맨 앞에 둠."""
-    if group == "가정용":
-        base = ["취사용", "개별난방", "중앙난방"]
-        # 실제 데이터에 없는 항목은 제외
-        have = sorted([s for s in base if not long_df[(long_df["구분"]==group)&(long_df["세부"]==s)].empty])
-        # 소계/합계가 존재하면 선택지에 추가
-        extras = []
-        for add in ["소계","합계"]:
-            if not long_df[(long_df["구분"]==group)&(long_df["세부"]==add)].empty:
-                extras.append(add)
-        return ["총계"] + have + extras
-    # 그 외 그룹: 존재하는 세부값을 전부 나열(소계/합계는 뒤로)
-    vals = list(long_df[long_df["구분"]==group]["세부"].unique())
-    # '합계'만 단독으로 존재하는 그룹(예: 산업용)은 '총계'와 동일 취급
-    if vals == ["합계"] or vals == ["합계","소계"] or vals == ["소계","합계"]:
-        return ["총계"] + [v for v in vals if v!="합계"]
-    # 일반 케이스
-    details = [v for v in vals if v not in ["소계","합계"]]
-    tail = [v for v in ["소계","합계"] if v in vals]
-    details = sorted(details)
-    return ["총계"] + details + tail
-
-def build_detail_lines(long_df: pd.DataFrame, years: List[int], group: str, chosen: List[str]) -> pd.DataFrame:
-    """세부 선택들(총계/개별/소계/합계)을 라인 차트용 long 데이터로 변환."""
-    base = long_df[(long_df["연"].isin(years)) & (long_df["구분"]==group)].copy()
-    if base.empty:
-        return pd.DataFrame(columns=["연","세부표시","월","값","예측","라벨"])
-
-    frames = []
-    # 실제 세부(소계/합계 제외)
-    real_detail = base[~base["세부"].isin(["소계","합계"])]
-
-    # 1) 총계
-    if "총계" in chosen:
-        tot = (
-            real_detail.groupby(["연","월"], as_index=False)["값"].sum()
-            .assign(세부표시="총계")
-        )
-        frames.append(tot)
-
-    # 2) 개별 세부(선택된 것만)
-    for s in chosen:
-        if s in ["총계"]:
-            continue
-        sub = base[base["세부"]==s]
-        if sub.empty:
-            continue
-        sub = sub.groupby(["연","월"], as_index=False)["값"].sum()
-        sub["세부표시"] = s
-        frames.append(sub)
-
-    if not frames:
-        return pd.DataFrame(columns=["연","세부표시","월","값","예측","라벨"])
-
-    out = pd.concat(frames, ignore_index=True).sort_values(["세부표시","연","월"])
-    out = _apply_predict_flag(out)
-    out["라벨"] = out["연"].astype(str) + "년 · " + out["세부표시"]
+def load_all_sheets(excel_bytes: bytes) -> Dict[str, pd.DataFrame]:
+    xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
+    needed = ["계획_부피", "실적_부피", "계획_열량", "실적_열량"]
+    out: Dict[str, pd.DataFrame] = {}
+    for name in needed:
+        if name in xls.sheet_names:
+            out[name] = xls.parse(name)
     return out
+
+
+def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    """부피 / 열량 각각에 대해 long 데이터프레임 생성."""
+    long_dict: Dict[str, pd.DataFrame] = {}
+    if ("계획_부피" in sheets) and ("실적_부피" in sheets):
+        long_dict["부피"] = make_long(sheets["계획_부피"], sheets["실적_부피"])
+    if ("계획_열량" in sheets) and ("실적_열량" in sheets):
+        long_dict["열량"] = make_long(sheets["계획_열량"], sheets["실적_열량"])
+    return long_dict
+
+
+# ─────────────────────────────────────────────────────────
+# 시각화 유틸
+# ─────────────────────────────────────────────────────────
+def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
+    st.markdown("### 월별 추이 그래프")
+
+    if long_df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    years = sorted(long_df["연"].unique().tolist())
+    default_years = years[-5:] if len(years) > 5 else years
+
+    sel_years = st.multiselect(
+        "연도 선택(그래프)",
+        options=years,
+        default=default_years,
+        key=f"{key_prefix}yrs",
+    )
+
+    if not sel_years:
+        st.info("표시할 연도를 한 개 이상 선택해 주세요.")
+        return
+
+    # 그룹 선택 UI (segmented_control 있으면 사용, 없으면 radio로 대체)
+    try:
+        sel_group = st.segmented_control(
+            "그룹",
+            GROUP_OPTIONS,
+            selection_mode="single",
+            default="총량",
+            key=f"{key_prefix}grp",
+        )
+    except Exception:
+        sel_group = st.radio(
+            "그룹",
+            GROUP_OPTIONS,
+            index=0,
+            horizontal=True,
+            key=f"{key_prefix}grp_radio",
+        )
+
+    base = long_df[long_df["연"].isin(sel_years)].copy()
+
+    if sel_group == "총량":
+        plot_df = (
+            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["연", "월", "계획/실적"])
+        )
+        plot_df["라벨"] = (
+            plot_df["연"].astype(str) + "년 · " + plot_df["계획/실적"]
+        )
+    else:
+        base = base[base["그룹"] == sel_group]
+        plot_df = (
+            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["연", "월", "계획/실적"])
+        )
+        plot_df["라벨"] = (
+            plot_df["연"].astype(str)
+            + "년 · "
+            + sel_group
+            + " · "
+            + plot_df["계획/실적"]
+        )
+
+    if plot_df.empty:
+        st.info("선택 조건에 해당하는 데이터가 없습니다.")
+        return
+
+    fig = px.line(
+        plot_df,
+        x="월",
+        y="값",
+        color="라벨",
+        line_dash="계획/실적",
+        category_orders={"계획/실적": ["실적", "계획"]},
+        line_dash_map={"실적": "solid", "계획": "dash"},
+        markers=True,
+    )
+    fig.update_layout(
+        xaxis=dict(dtick=1),
+        yaxis_title=f"공급량 ({unit_label})",
+        legend_title="연도 / 구분",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
+    st.markdown("### 연간 계획대비 실적 요약 — 그룹별 분석")
+
+    if long_df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    years = sorted(long_df["연"].unique().tolist())
+
+    col1, col2 = st.columns(2)
+    with col1:
+        sel_year = st.selectbox(
+            "연도 선택(집계)",
+            options=years,
+            index=len(years) - 1,
+            key=f"{key_prefix}summary_year",
+        )
+    with col2:
+        # 집계는 항상 그룹별로 보는 것이 목적이므로 별도 그룹 선택은 생략
+        view_mode = st.radio(
+            "표시 기준",
+            ["그룹별 합계", "그룹·용도 세부"],
+            index=0,
+            horizontal=True,
+            key=f"{key_prefix}summary_mode",
+        )
+
+    base = long_df[long_df["연"] == sel_year].copy()
+    if base.empty:
+        st.info("선택한 연도에 데이터가 없습니다.")
+        return
+
+    if view_mode == "그룹별 합계":
+        grp = (
+            base.groupby(["그룹", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["그룹", "계획/실적"])
+        )
+        pivot = (
+            grp.pivot(index="그룹", columns="계획/실적", values="값")
+            .fillna(0.0)
+            .rename_axis(None, axis=1)
+        )
+    else:
+        grp = (
+            base.groupby(["그룹", "용도", "계획/실적"], as_index=False)["값"]
+            .sum()
+            .sort_values(["그룹", "용도", "계획/실적"])
+        )
+        grp["그룹/용도"] = grp["그룹"] + " / " + grp["용도"]
+        pivot = (
+            grp.pivot(index="그룹/용도", columns="계획/실적", values="값")
+            .fillna(0.0)
+            .rename_axis(None, axis=1)
+        )
+
+    # 계획·실적·차이·달성률 계산
+    for c in ["계획", "실적"]:
+        if c not in pivot.columns:
+            pivot[c] = 0.0
+
+    pivot["차이(실적-계획)"] = pivot["실적"] - pivot["계획"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pivot["달성률(%)"] = np.where(
+            pivot["계획"] != 0,
+            (pivot["실적"] / pivot["계획"]) * 100.0,
+            np.nan,
+        )
+
+    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
+
+    # 표 표시
+    styled = pivot.style.format(
+        {
+            "계획": "{:,.0f}",
+            "실적": "{:,.0f}",
+            "차이(실적-계획)": "{:,.0f}",
+            "달성률(%)": "{:,.1f}",
+        }
+    )
+    st.dataframe(styled, use_container_width=True)
+
+    # 막대그래프 (그룹별 계획 vs 실적)
+    st.markdown("#### 선택 연도 그룹별 계획·실적 막대그래프")
+
+    if view_mode == "그룹별 합계":
+        bar_df = grp.copy()
+        x_col = "그룹"
+    else:
+        bar_df = grp.copy()
+        bar_df["그룹/용도"] = bar_df["그룹"] + " / " + bar_df["용도"]
+        x_col = "그룹/용도"
+
+    fig_bar = px.bar(
+        bar_df,
+        x=x_col,
+        y="값",
+        color="계획/실적",
+        barmode="group",
+    )
+    fig_bar.update_layout(
+        xaxis_title=x_col,
+        yaxis_title=f"연간 합계 ({unit_label})",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+
+def total_volume_by_year_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
+    st.markdown("### 전체 총 공급량 막대그래프 (연도별 · 계획/실적)")
+
+    if long_df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    year_tot = (
+        long_df.groupby(["연", "계획/실적"], as_index=False)["값"]
+        .sum()
+        .sort_values(["연", "계획/실적"])
+    )
+
+    fig = px.bar(
+        year_tot,
+        x="연",
+        y="값",
+        color="계획/실적",
+        barmode="group",
+    )
+    fig.update_layout(
+        xaxis_title="연도",
+        yaxis_title=f"총 공급량 ({unit_label})",
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 # ─────────────────────────────────────────────────────────
 # 본문
 # ─────────────────────────────────────────────────────────
-st.title("공급량 실적 및 계획 상세")
+st.title("도시가스 판매량 계획 / 실적 분석")
 
 with st.sidebar:
     st.header("데이터 불러오기")
     src = st.radio("데이터 소스", ["레포 파일 사용", "엑셀 업로드(.xlsx)"], index=0)
-    excel_bytes: bytes | None = None
-    base_info = f"소스: 레포 파일: {DEFAULT_XLSX}"
+    excel_bytes = None
+    base_info = ""
     if src == "엑셀 업로드(.xlsx)":
-        up = st.file_uploader("엑셀 업로드", type=["xlsx"])
-        if up:
+        up = st.file_uploader("판매량(계획_실적).xlsx 형식", type=["xlsx"])
+        if up is not None:
             excel_bytes = up.getvalue()
-            base_info = f"소스: 업로드 파일: {up.name}"
-    if excel_bytes is None:
+            base_info = f"소스: 업로드 파일 — {up.name}"
+    else:
         path = Path(__file__).parent / DEFAULT_XLSX
         if path.exists():
             excel_bytes = path.read_bytes()
+            base_info = f"소스: 레포 파일 — {DEFAULT_XLSX}"
+        else:
+            base_info = f"레포 경로에 {DEFAULT_XLSX} 파일이 없습니다."
+
 st.caption(base_info)
 
-scenario = st.tabs(SCENARIOS)
-sheets: Dict[str, pd.DataFrame] = {}
-if excel_bytes:
-    sheets = read_excel_all_sheets(excel_bytes)
+long_dict: Dict[str, pd.DataFrame] = {}
+if excel_bytes is not None:
+    sheets = load_all_sheets(excel_bytes)
+    long_dict = build_long_dict(sheets)
 
-for sn, tab in zip(SCENARIOS, scenario):
-    with tab:
-        st.subheader(f"시나리오: {sn}")
+tab_labels = []
+if "부피" in long_dict:
+    tab_labels.append("부피 기준 (Nm³)")
+if "열량" in long_dict:
+    tab_labels.append("열량 기준 (MJ)")
 
-        cand = [sn, "데이터"] if sn == "데이터" else [sn]
-        sheet_name = next((s for s in cand if s in sheets), None)
-        if not sheet_name:
-            st.info("해당 시나리오 시트를 찾지 못했습니다. (데이터/best/conservative)")
-            continue
-
-        raw = sheets[sheet_name]
-        order_pairs = sheet_column_order_pairs(raw)
-        long_df = to_long(raw)
-
-        # 연도별 표
-        ytabs = st.tabs([f"{y}년 표" for y in YEARS])
-        for y, t in zip(YEARS, ytabs):
-            with t:
-                st.markdown(f"**{y}년 표**")
-                pv = make_pivot(long_df, y, order_pairs)
-                show_table(pv, key=f"{sn}_{y}")
-
-        st.markdown("---")
-        st.subheader("월별 추이 그래프")
-
-        sel_years = st.multiselect("연도 선택(그래프)", YEARS, default=YEARS, key=f"yrs_{sn}")
-        group_options = ["총량","가정용","영업용","업무용","산업용","열병합","연료전지","자가열전용","열전용설비용","CNG","수송용"]
-        # 상단 그래프용 그룹 버튼 (단일 선택)
-        sel_group = st.segmented_control("그룹", group_options, selection_mode="single",
-                                         default="총량", key=f"grp_{sn}")
-
-        plot_base = long_df[long_df["연"].isin(sel_years)].copy()
-        plot_base = plot_base[plot_base["구분"] != "합계"]
-
-        # ── 상단: 그룹별 총량 추이
-        if sel_group == "총량":
-            plot_df = (
-                plot_base.groupby(["연","월"], as_index=False)["값"].sum()
-                .sort_values(["연","월"])
-            )
-            plot_df["라벨"] = plot_df["연"].astype(str) + "년 · 총량"
-        else:
-            plot_df = (
-                plot_base[plot_base["구분"] == sel_group]
-                .groupby(["연","구분","월"], as_index=False)["값"].sum()
-                .sort_values(["연","구분","월"])
-            )
-            plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"].astype(str)
-
-        if not plot_df.empty:
-            plot_df = _apply_predict_flag(plot_df)
-
-        if plot_df.empty:
-            st.info("선택 조건에 해당하는 데이터가 없습니다.")
-        else:
-            fig = px.line(
-                plot_df,
-                x="월", y="값",
-                color="라벨",
-                line_dash="예측",
-                category_orders={"예측": ["실적","예측"]},
-                line_dash_map={"실적": "solid", "예측": "dash"},
-                markers=True,
-            )
-            fig.update_layout(
-                xaxis=dict(dtick=1),
-                yaxis_title="공급량",
-                legend_title="연도/그룹",
-                margin=dict(l=10, r=10, t=10, b=10),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        # ──────────────────────────────────────────────
-        # 하단: 선택 그룹의 세부 구성 그래프 + 세부 버튼
-        # ──────────────────────────────────────────────
-        st.markdown("#### 선택 그룹의 세부 구성 그래프")
-
-        if sel_group == "총량":
-            st.info("세부 그래프는 특정 그룹을 선택하면 표시돼. 예: ‘가정용’을 선택하면 총계/취사용/개별난방/중앙난방 버튼이 활성화돼.")
-        else:
-            # 세부 옵션 생성
-            detail_options = get_detail_options(long_df, sel_group)
-            # 버튼 UI — 환경에 따라 segmented_control의 멀티 선택이 지원되지 않을 수 있어 multiselect 병행
-            # 가능한 경우: segmented_control(selection_mode="multiple")
-            try:
-                chosen = st.segmented_control("세부 선택", detail_options,
-                                              selection_mode="multiple",
-                                              default=["총계"], key=f"detail_btn_{sn}")
-                if not isinstance(chosen, list):
-                    chosen = [chosen]
-            except Exception:
-                chosen = st.multiselect("세부 선택", detail_options, default=["총계"], key=f"detail_ms_{sn}")
-
-            # 라인 데이터 구성
-            detail_df = build_detail_lines(long_df, sel_years, sel_group, chosen)
-
-            if detail_df.empty:
-                st.info("선택한 세부에 해당하는 데이터가 없습니다.")
+if not tab_labels:
+    st.info("유효한 시트를 찾지 못했습니다. 파일에 '계획_부피', '실적_부피' (또는 '계획_열량', '실적_열량') 시트가 있는지 확인해 주세요.")
+else:
+    tabs = st.tabs(tab_labels)
+    for tab_label, tab in zip(tab_labels, tabs):
+        with tab:
+            if tab_label.startswith("부피"):
+                df_long = long_dict.get("부피", pd.DataFrame())
+                unit = "Nm³"
+                prefix = "vol_"
             else:
-                fig2 = px.line(
-                    detail_df,
-                    x="월", y="값",
-                    color="라벨",
-                    line_dash="예측",
-                    category_orders={"예측": ["실적","예측"]},
-                    line_dash_map={"실적": "solid", "예측": "dash"},
-                    markers=True,
-                )
-                fig2.update_layout(
-                    xaxis=dict(dtick=1),
-                    yaxis_title="공급량",
-                    legend_title="연도/세부",
-                    margin=dict(l=10, r=10, t=10, b=10),
-                )
-                st.plotly_chart(fig2, use_container_width=True)
+                df_long = long_dict.get("열량", pd.DataFrame())
+                unit = "MJ"
+                prefix = "mj_"
+
+            monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix + "trend_")
+            st.markdown("---")
+            yearly_summary_section(df_long, unit_label=unit, key_prefix=prefix + "summary_")
+            st.markdown("---")
+            total_volume_by_year_section(df_long, unit_label=unit, key_prefix=prefix + "total_")
