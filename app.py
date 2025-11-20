@@ -1,6 +1,6 @@
 import io
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -28,25 +28,6 @@ set_korean_font()
 st.set_page_config(page_title="도시가스 판매량 계획/실적 분석", layout="wide")
 
 DEFAULT_XLSX = "판매량(계획_실적).xlsx"
-
-# 엑셀 헤더 → 분석 그룹 매핑
-USE_COL_TO_GROUP: Dict[str, str] = {
-    "취사용": "가정용",
-    "개별난방용": "가정용",
-    "중앙난방용": "가정용",
-    "자가열전용": "가정용",
-    "일반용": "영업용",
-    "업무난방용": "업무용",
-    "냉방용": "업무용",
-    "주한미군": "업무용",
-    "산업용": "산업용",
-    "수송용(CNG)": "수송용",
-    "수송용(BIO)": "수송용",
-    "열병합용1": "열병합",
-    "열병합용2": "열병합",
-    "연료전지용": "연료전지",
-    "열전용설비용": "열전용설비용",
-}
 
 GROUP_OPTIONS: List[str] = [
     "총량",
@@ -89,22 +70,57 @@ def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _map_group(col: str) -> Optional[str]:
+    """
+    엑셀 헤더 이름에 들어있는 문자열 기준으로 그룹을 매핑.
+    - '소계' 가 들어가면 집계에서 제외(중복 방지)
+    """
+    if "소계" in col:
+        return None
+
+    if any(k in col for k in ["취사용", "개별난방용", "중앙난방용", "자가열전용"]):
+        return "가정용"
+    if "일반용" in col:
+        return "영업용"
+    if any(k in col for k in ["업무난방용", "냉방용", "주한미군"]):
+        return "업무용"
+    if "산업용" in col:
+        return "산업용"
+    if "수송용" in col:
+        return "수송용"
+    if "열병합" in col:
+        return "열병합"
+    if "연료전지" in col:
+        return "연료전지"
+    if "열전용설비" in col:
+        return "열전용설비용"
+
+    return None
+
+
 def make_long(plan_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
     """wide → long (연·월·그룹·용도·계획/실적·값)."""
-    plan_df = _clean_base(plan_df)
-    actual_df = _clean_base(actual_df)
 
-    records = []
-    for label, df in [("계획", plan_df), ("실적", actual_df)]:
-        for col, group in USE_COL_TO_GROUP.items():
-            if col not in df.columns:
+    def _expand(df: pd.DataFrame, label: str) -> List[pd.DataFrame]:
+        df = _clean_base(df)
+        pieces: List[pd.DataFrame] = []
+        for col in df.columns:
+            if col in ["연", "월"]:
+                continue
+            group = _map_group(col)
+            if group is None:
                 continue
             base = df[["연", "월"]].copy()
             base["그룹"] = group
             base["용도"] = col
             base["계획/실적"] = label
             base["값"] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-            records.append(base)
+            pieces.append(base)
+        return pieces
+
+    records: List[pd.DataFrame] = []
+    records.extend(_expand(plan_df, "계획"))
+    records.extend(_expand(actual_df, "실적"))
 
     if not records:
         return pd.DataFrame(columns=["연", "월", "그룹", "용도", "계획/실적", "값"])
@@ -139,20 +155,20 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 # 0. 상단 월간 핵심 대시보드
 # ─────────────────────────────────────────────────────────
 def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: str = "#1f77b4"):
-    """HTML로 예쁜 카드 렌더링."""
+    """HTML 카드 렌더링."""
     html = f"""
     <div style="
         background-color:#ffffff;
-        border-radius:18px;
-        padding:18px 20px 16px 20px;
-        box-shadow:0 3px 10px rgba(0,0,0,0.06);
+        border-radius:22px;
+        padding:20px 22px 18px 22px;
+        box-shadow:0 4px 14px rgba(0,0,0,0.06);
         height:100%;
     ">
-        <div style="font-size:32px; line-height:1; margin-bottom:4px;">{icon}</div>
-        <div style="font-size:15px; font-weight:600; color:#555; margin-bottom:2px;">
+        <div style="font-size:38px; line-height:1; margin-bottom:6px;">{icon}</div>
+        <div style="font-size:16px; font-weight:600; color:#555; margin-bottom:4px;">
             {title}
         </div>
-        <div style="font-size:28px; font-weight:700; color:{color}; margin-bottom:4px;">
+        <div style="font-size:30px; font-weight:800; color:{color}; margin-bottom:6px;">
             {main}
         </div>
         <div style="font-size:12px; color:#777; min-height:16px;">
@@ -214,7 +230,8 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     with c_info:
         st.markdown(
             f"<div style='padding-top:26px;font-size:14px;color:#666;'>"
-            f"선택 연월: <b>{sel_year}년 {sel_month}월</b> · <span style='color:#444;'>{agg_mode}</span>"
+            f"선택 연월: <b>{sel_year}년 {sel_month}월</b> · "
+            f"<span style='color:#444;'>{agg_mode}</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -245,10 +262,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     # 계획대비, 전년대비 계산
     plan_diff = act_total - plan_total if not np.isnan(plan_total) else np.nan
-    plan_rate = (act_total / plan_total * 100.0) if plan_total not in (0, np.nan) else np.nan
+    plan_rate = (act_total / plan_total * 100.0) if plan_total not in (0, np.nan) and plan_total != 0 else np.nan
 
     prev_diff = act_total - prev_total if not np.isnan(prev_total) else np.nan
-    prev_rate = (act_total / prev_total * 100.0) if prev_total not in (0, np.nan) else np.nan
+    prev_rate = (act_total / prev_total * 100.0) if prev_total not in (0, np.nan) and prev_total != 0 else np.nan
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -707,7 +724,6 @@ def plan_vs_actual_usage_section(
 
     col1, col2, col3 = st.columns([2, 2, 1.5])
     with col1:
-        # 세그먼트 버튼 형태의 용도(그룹) 선택 (앞에 '총량' 포함)
         try:
             sel_group = st.segmented_control(
                 "용도(그룹) 선택",
@@ -768,7 +784,6 @@ def plan_vs_actual_usage_section(
         st.info("선택 조건에 해당하는 데이터가 없어.")
         return
 
-    # 기준 연도 데이터
     df_year = base[base["연"] == sel_year]
     if df_year.empty:
         st.info("선택한 연도의 데이터가 없어.")
@@ -788,7 +803,6 @@ def plan_vs_actual_usage_section(
         .sort_values(["월", "계획/실적"])
     )
 
-    # 증감 계산(기준연도 실적-계획)
     plan_series = (
         bars[bars["계획/실적"] == "계획"].set_index("월")["값"].sort_index()
     )
@@ -802,7 +816,6 @@ def plan_vs_actual_usage_section(
 
     fig = go.Figure()
 
-    # ① 기준연도 계획/실적 막대 (푸른 계열)
     for status, name, color in [
         ("계획", f"{sel_year}년 계획", COLOR_PLAN),
         ("실적", f"{sel_year}년 실적", COLOR_ACT),
@@ -818,7 +831,6 @@ def plan_vs_actual_usage_section(
             marker_color=color,
         )
 
-    # ② (옵션) 전년 실적 막대 — 항상 마지막 trace, 연회색
     if include_prev and not df_prev.empty:
         prev_group = (
             df_prev.groupby("월", as_index=False)["값"]
@@ -833,7 +845,6 @@ def plan_vs_actual_usage_section(
             marker_color=COLOR_PREV,
         )
 
-    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축 + 숫자 라벨
     if len(diff_series) > 0:
         diff_text = [f"{v:,.0f}" for v in diff_series.values]
         fig.add_scatter(
@@ -865,7 +876,6 @@ def plan_vs_actual_usage_section(
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ④ 그래프 하단 요약표
     st.markdown("##### 🔢 월별 계획·실적·전년실적·증감 수치")
     table = (
         bars.pivot(index="월", columns="계획/실적", values="값")
@@ -873,7 +883,6 @@ def plan_vs_actual_usage_section(
         .fillna(0.0)
     )
 
-    # (옵션) 전년 실적 컬럼
     if include_prev and not df_prev.empty:
         prev_tbl = (
             df_prev.groupby("월", as_index=False)["값"]
@@ -906,7 +915,6 @@ def half_year_stacked_section(
         st.info("연도 정보가 없습니다.")
         return
 
-    # 디폴트: 2021~2025 중, 실제 존재하는 연도만 선택
     preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
     default_years = preferred_years if preferred_years else [years[-1]]
 
@@ -956,7 +964,6 @@ def half_year_stacked_section(
     )
     fig.update_traces(width=0.4, selector=dict(type="bar"))
 
-    # 합계 / 가정용 라인 + 숫자라벨
     total = grp.groupby("연", as_index=False)["값"].sum().rename(columns={"값": "합계"})
     home = (
         grp[grp["그룹"] == "가정용"]
@@ -999,7 +1006,6 @@ def half_year_stacked_section(
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 그래프 하단 요약표
     st.markdown("##### 🔢 연도·그룹별 누적 실적 수치")
     summary = (
         grp.pivot(index="연", columns="그룹", values="값")
@@ -1042,7 +1048,7 @@ if excel_bytes is not None:
 
 tab_labels: List[str] = []
 if "부피" in long_dict:
-    tab_labels.append("부피 기준 (Nm³)")
+    tab_labels.append("부피 기준 (천m³)")
 if "열량" in long_dict:
     tab_labels.append("열량 기준 (MJ)")
 
@@ -1056,7 +1062,7 @@ else:
         with tab:
             if tab_label.startswith("부피"):
                 df_long = long_dict.get("부피", pd.DataFrame())
-                unit = "Nm³"
+                unit = "천m³"
                 prefix = "vol_"
             else:
                 df_long = long_dict.get("열량", pd.DataFrame())
