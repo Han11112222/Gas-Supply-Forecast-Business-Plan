@@ -126,6 +126,175 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 # ─────────────────────────────────────────────────────────
+# 0. 상단 월간 핵심 대시보드
+# ─────────────────────────────────────────────────────────
+def monthly_kpi_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
+    st.markdown("## 📌 월간 핵심 대시보드")
+
+    if long_df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    years = sorted(long_df["연"].unique().tolist())
+    if not years:
+        st.info("연도 정보가 없습니다.")
+        return
+
+    default_year_index = len(years) - 1
+
+    col1, col2, col3 = st.columns([1.2, 1.2, 1])
+    with col1:
+        sel_year = st.selectbox(
+            "연도 선택",
+            options=years,
+            index=default_year_index,
+            key=f"{key_prefix}dash_year",
+        )
+
+    year_df = long_df[long_df["연"] == sel_year]
+    months_available = sorted(year_df["월"].unique().tolist())
+    if not months_available:
+        months_available = sorted(long_df["월"].unique().tolist())
+
+    with col2:
+        sel_month = st.selectbox(
+            "월 선택",
+            options=months_available,
+            index=0,
+            key=f"{key_prefix}dash_month",
+        )
+
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f"**선택 연월:** {sel_year}년 {sel_month}월")
+
+    # 현재 연월 데이터
+    curr = long_df[(long_df["연"] == sel_year) & (long_df["월"] == sel_month)].copy()
+    if curr.empty:
+        st.info("선택 연월에 대한 데이터가 없어.")
+        return
+
+    plan_curr = curr[curr["계획/실적"] == "계획"]["값"].sum()
+    act_curr = curr[curr["계획/실적"] == "실적"]["값"].sum()
+
+    diff_plan = act_curr - plan_curr
+    rate_plan = (act_curr / plan_curr * 100.0) if plan_curr != 0 else np.nan
+
+    # 전년 동월
+    prev_year = sel_year - 1
+    prev = long_df[
+        (long_df["연"] == prev_year)
+        & (long_df["월"] == sel_month)
+        & (long_df["계획/실적"] == "실적")
+    ]
+    act_prev = prev["값"].sum() if not prev.empty else np.nan
+    if np.isnan(act_prev):
+        diff_yoy = np.nan
+        rate_yoy = np.nan
+    else:
+        diff_yoy = act_curr - act_prev
+        rate_yoy = (act_curr / act_prev * 100.0) if act_prev != 0 else np.nan
+
+    # ── 2. 계획대비 메트릭
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("📘 계획 합계", f"{plan_curr:,.0f}")
+    m2.metric("📗 실적 합계", f"{act_curr:,.0f}")
+    m3.metric("📉 계획대비 차이", f"{diff_plan:,.0f}")
+    m4.metric(
+        "🎯 계획 달성률(%)",
+        f"{rate_plan:,.1f}" if not np.isnan(rate_plan) else "-",
+    )
+
+    # ── 3. 전년 대비 메트릭
+    y1, y2, y3 = st.columns(3)
+    y1.metric(
+        "📙 전년 동월 실적",
+        f"{act_prev:,.0f}" if not np.isnan(act_prev) else "-",
+    )
+    y2.metric(
+        "📈 전년대비 차이",
+        f"{diff_yoy:,.0f}" if not np.isnan(diff_yoy) else "-",
+    )
+    y3.metric(
+        "⚖️ 전년대비 증감률(%)",
+        f"{rate_yoy:,.1f}" if not np.isnan(rate_yoy) else "-",
+    )
+
+    # ── 4. 특이 용도(이상 감지)
+    st.markdown("#### ⚠️ 특이 용도 (계획·전년 대비 편차 상위)")
+
+    plan_g = (
+        curr[curr["계획/실적"] == "계획"]
+        .groupby("그룹")["값"]
+        .sum()
+        .rename("계획")
+    )
+    act_g = (
+        curr[curr["계획/실적"] == "실적"]
+        .groupby("그룹")["값"]
+        .sum()
+        .rename("실적")
+    )
+
+    summary = pd.concat([plan_g, act_g], axis=1).fillna(0.0)
+
+    prev_g = (
+        prev.groupby("그룹")["값"].sum().rename("전년실적")
+        if not prev.empty
+        else pd.Series(dtype=float, name="전년실적")
+    )
+    summary = summary.join(prev_g, how="left")
+
+    if summary.empty:
+        st.caption("선택 연월 기준으로 그룹별 집계가 없습니다.")
+        return
+
+    summary["계획대비차이"] = summary["실적"] - summary["계획"]
+    summary["계획달성률(%)"] = np.where(
+        summary["계획"] != 0,
+        summary["실적"] / summary["계획"] * 100.0,
+        np.nan,
+    )
+
+    summary["전년대비차이"] = summary["실적"] - summary["전년실적"].fillna(0.0)
+    summary["전년대비증감률(%)"] = np.where(
+        summary["전년실적"].notna() & (summary["전년실적"] != 0),
+        summary["실적"] / summary["전년실적"] * 100.0,
+        np.nan,
+    )
+
+    # 편차 절대값으로 상위 5개 뽑기
+    summary["편차절대값"] = summary[
+        ["계획대비차이", "전년대비차이"]
+    ].abs().max(axis=1)
+    top = summary.sort_values("편차절대값", ascending=False).head(5)
+
+    show_cols = [
+        "계획",
+        "실적",
+        "계획대비차이",
+        "계획달성률(%)",
+        "전년실적",
+        "전년대비차이",
+        "전년대비증감률(%)",
+    ]
+    st.dataframe(
+        top[show_cols].style.format(
+            {
+                "계획": "{:,.0f}",
+                "실적": "{:,.0f}",
+                "계획대비차이": "{:,.0f}",
+                "계획달성률(%)": "{:,.1f}",
+                "전년실적": "{:,.0f}",
+                "전년대비차이": "{:,.0f}",
+                "전년대비증감률(%)": "{:,.1f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # 1. 월별 추이
 # ─────────────────────────────────────────────────────────
 def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
@@ -441,10 +610,10 @@ def plan_vs_actual_usage_section(
         st.info("데이터가 없습니다.")
         return
 
-    # 사용할 그룹 리스트 (총량 제외, 실제 존재하는 그룹만)
-    groups_all = sorted(g for g in long_df["그룹"].unique() if g is not None)
-    available_groups = [
-        g for g in GROUP_OPTIONS if g != "총량" and g in groups_all
+    # 사용할 그룹 리스트 (총량 포함, 실제 존재하는 그룹만)
+    groups_all_set = set(long_df["그룹"].dropna().unique())
+    available_groups = ["총량"] + [
+        g for g in GROUP_OPTIONS if g != "총량" and g in groups_all_set
     ]
     if not available_groups:
         st.info("선택 가능한 그룹이 없습니다.")
@@ -468,18 +637,14 @@ def plan_vs_actual_usage_section(
                 "용도(그룹) 선택",
                 available_groups,
                 selection_mode="single",
-                default="가정용"
-                if "가정용" in available_groups
-                else available_groups[0],
+                default="총량",
                 key=f"{key_prefix}pv_group",
             )
         except Exception:
             sel_group = st.radio(
                 "용도(그룹) 선택",
                 available_groups,
-                index=available_groups.index("가정용")
-                if "가정용" in available_groups
-                else 0,
+                index=0,
                 horizontal=True,
                 key=f"{key_prefix}pv_group_radio",
             )
@@ -505,7 +670,11 @@ def plan_vs_actual_usage_section(
         key=f"{key_prefix}pv_period",
     )
 
-    base = long_df[long_df["그룹"] == sel_group].copy()
+    # 그룹 필터 (총량이면 전체)
+    if sel_group == "총량":
+        base = long_df.copy()
+    else:
+        base = long_df[long_df["그룹"] == sel_group].copy()
 
     if period == "상반기(1~6월)":
         month_mask = (base["월"] >= 1) & (base["월"] <= 6)
@@ -603,8 +772,9 @@ def plan_vs_actual_usage_section(
             textfont=dict(size=11),
         )
 
+    title_group = "총량(전체)" if sel_group == "총량" else sel_group
     fig.update_layout(
-        title=f"{sel_year}년 {sel_group} 판매량 및 증감 ({period_label})",
+        title=f"{sel_year}년 {title_group} 판매량 및 증감 ({period_label})",
         xaxis_title="월",
         yaxis_title=f"판매량 ({unit_label})",
         xaxis=dict(dtick=1),
@@ -817,6 +987,10 @@ else:
                 unit = "MJ"
                 prefix = "mj_"
 
+            # 맨 상단: 월간 핵심 대시보드
+            monthly_kpi_dashboard(df_long, unit_label=unit, key_prefix=prefix + "dash_")
+
+            st.markdown("---")
             # 상단: 실적 중심
             st.markdown("## 📊 실적 분석")
             monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix)
