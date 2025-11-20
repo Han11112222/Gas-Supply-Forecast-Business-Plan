@@ -60,6 +60,12 @@ GROUP_OPTIONS: List[str] = [
     "열전용설비용",
 ]
 
+# 계획대비 월별 그래프용 색상 (모두 파란 계열)
+COLOR_PLAN = "rgba(0, 90, 200, 1)"      # 기준연도 계획
+COLOR_ACT = "rgba(0, 150, 255, 1)"     # 기준연도 실적
+COLOR_PREV = "rgba(0, 120, 230, 0.9)"  # 전년 실적
+COLOR_DIFF = "rgba(0, 80, 160, 1)"     # 증감 선
+
 
 # ─────────────────────────────────────────────────────────
 # 데이터 유틸
@@ -353,7 +359,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 3. 계획대비 월별 (Y계획, Y실적, Y-1실적 + 증감 라인)
+# 3. 계획대비 월별 (Y계획, Y실적, 옵션 Y-1실적 + 증감 라인)
 # ─────────────────────────────────────────────────────────
 def plan_vs_actual_usage_section(
     long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""
@@ -364,7 +370,15 @@ def plan_vs_actual_usage_section(
         st.info("데이터가 없습니다.")
         return
 
-    groups = sorted(g for g in long_df["그룹"].unique() if g is not None)
+    # 사용할 그룹 리스트 (총량 제외, 실제 존재하는 그룹만)
+    groups_all = sorted(g for g in long_df["그룹"].unique() if g is not None)
+    available_groups = [
+        g for g in GROUP_OPTIONS if g != "총량" and g in groups_all
+    ]
+    if not available_groups:
+        st.info("선택 가능한 그룹이 없습니다.")
+        return
+
     years = sorted(long_df["연"].unique().tolist())
     if not years:
         st.info("연도 정보가 없습니다.")
@@ -375,14 +389,30 @@ def plan_vs_actual_usage_section(
     else:
         default_year_index = len(years) - 1
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns([2, 2, 1.5])
     with col1:
-        sel_group = st.selectbox(
-            "용도(그룹) 선택",
-            options=groups,
-            index=groups.index("가정용") if "가정용" in groups else 0,
-            key=f"{key_prefix}pv_group",
-        )
+        # 세그먼트 버튼 형태의 용도(그룹) 선택
+        try:
+            sel_group = st.segmented_control(
+                "용도(그룹) 선택",
+                available_groups,
+                selection_mode="single",
+                default="가정용"
+                if "가정용" in available_groups
+                else available_groups[0],
+                key=f"{key_prefix}pv_group",
+            )
+        except Exception:
+            sel_group = st.radio(
+                "용도(그룹) 선택",
+                available_groups,
+                index=available_groups.index("가정용")
+                if "가정용" in available_groups
+                else 0,
+                horizontal=True,
+                key=f"{key_prefix}pv_group_radio",
+            )
+
     with col2:
         sel_year = st.selectbox(
             "기준 연도 선택",
@@ -390,14 +420,19 @@ def plan_vs_actual_usage_section(
             index=default_year_index,
             key=f"{key_prefix}pv_year",
         )
+
     with col3:
-        period = st.radio(
-            "기간",
-            ["연간", "상반기(1~6월)", "하반기(7~12월)"],
-            index=0,
-            horizontal=False,
-            key=f"{key_prefix}pv_period",
+        include_prev = st.toggle(
+            "(Y-1) 포함", value=False, key=f"{key_prefix}pv_prev"
         )
+
+    period = st.radio(
+        "기간",
+        ["연간", "상반기(1~6월)", "하반기(7~12월)"],
+        index=0,
+        horizontal=False,
+        key=f"{key_prefix}pv_period",
+    )
 
     base = long_df[long_df["그룹"] == sel_group].copy()
 
@@ -423,7 +458,12 @@ def plan_vs_actual_usage_section(
         return
 
     prev_year = sel_year - 1
-    df_prev = base[(base["연"] == prev_year) & (base["계획/실적"] == "실적")]
+    if include_prev:
+        df_prev = base[
+            (base["연"] == prev_year) & (base["계획/실적"] == "실적")
+        ]
+    else:
+        df_prev = pd.DataFrame([])
 
     bars = (
         df_year.groupby(["월", "계획/실적"], as_index=False)["값"]
@@ -445,8 +485,11 @@ def plan_vs_actual_usage_section(
 
     fig = go.Figure()
 
-    # ① 기준연도 계획/실적 막대
-    for status, name in [("계획", f"{sel_year}년 계획"), ("실적", f"{sel_year}년 실적")]:
+    # ① 기준연도 계획/실적 막대 (파란 계열 색상)
+    for status, name, color in [
+        ("계획", f"{sel_year}년 계획", COLOR_PLAN),
+        ("실적", f"{sel_year}년 실적", COLOR_ACT),
+    ]:
         sub = bars[bars["계획/실적"] == status]
         if sub.empty:
             continue
@@ -455,10 +498,11 @@ def plan_vs_actual_usage_section(
             y=sub["값"],
             name=name,
             width=0.25,
+            marker_color=color,
         )
 
-    # ② 전년 실적 막대
-    if not df_prev.empty:
+    # ② (옵션) 전년 실적 막대
+    if include_prev and not df_prev.empty:
         prev_group = (
             df_prev.groupby("월", as_index=False)["값"]
             .sum()
@@ -469,9 +513,10 @@ def plan_vs_actual_usage_section(
             y=prev_group["값"],
             name=f"{prev_year}년 실적",
             width=0.25,
+            marker_color=COLOR_PREV,
         )
 
-    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축, 막대 위에 보이도록 마지막에 추가
+    # ③ 증감(실적-계획) 꺾은선 — 우측 보조축, 파란 계열 색상
     if len(diff_series) > 0:
         fig.add_scatter(
             x=months_all,
@@ -479,6 +524,8 @@ def plan_vs_actual_usage_section(
             mode="lines+markers",
             name="증감(실적-계획)",
             yaxis="y2",
+            line=dict(color=COLOR_DIFF, width=2),
+            marker=dict(color=COLOR_DIFF),
         )
 
     fig.update_layout(
@@ -505,8 +552,8 @@ def plan_vs_actual_usage_section(
         .fillna(0.0)
     )
 
-    # 전년 실적 추가
-    if not df_prev.empty:
+    # (옵션) 전년 실적 컬럼
+    if include_prev and not df_prev.empty:
         prev_tbl = (
             df_prev.groupby("월", as_index=False)["값"]
             .sum()
@@ -514,7 +561,8 @@ def plan_vs_actual_usage_section(
         )
         table["전년실적"] = prev_tbl
     else:
-        table["전년실적"] = 0.0
+        if "전년실적" in table.columns:
+            table = table.drop(columns=["전년실적"])
 
     table["증감(실적-계획)"] = table.get("실적", 0.0) - table.get("계획", 0.0)
     st.dataframe(table.style.format("{:,.0f}"), use_container_width=True)
@@ -698,11 +746,17 @@ else:
             # 상단: 실적 중심
             st.markdown("## 📊 실적 분석")
             monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix)
-            half_year_stacked_section(df_long, unit_label=unit, key_prefix=prefix + "stack_")
+            half_year_stacked_section(
+                df_long, unit_label=unit, key_prefix=prefix + "stack_"
+            )
 
             st.markdown("---")
 
             # 하단: 계획대비 분석
             st.markdown("## 📏 계획대비 분석")
-            yearly_summary_section(df_long, unit_label=unit, key_prefix=prefix + "summary_")
-            plan_vs_actual_usage_section(df_long, unit_label=unit, key_prefix=prefix + "pv_")
+            yearly_summary_section(
+                df_long, unit_label=unit, key_prefix=prefix + "summary_"
+            )
+            plan_vs_actual_usage_section(
+                df_long, unit_label=unit, key_prefix=prefix + "pv_"
+            )
