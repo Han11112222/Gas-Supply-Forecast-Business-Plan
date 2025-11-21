@@ -211,20 +211,27 @@ def apply_period_filter_multi_years(
     return base
 
 
-def render_section_selector(long_df: pd.DataFrame, title: str, key_prefix: str) -> Tuple[int, int, str, List[int]]:
+def render_section_selector(
+    long_df: pd.DataFrame,
+    title: str,
+    key_prefix: str,
+    fixed_mode: Optional[str] = None,   # "당월" or "월 누적" 고정 가능
+    show_mode: bool = True             # 모드 라디오 표시 여부
+) -> Tuple[int, int, str, List[int]]:
     """각 섹션별 기준선택 UI."""
     st.markdown(f"#### ✅ {title} 기준 선택")
 
     years = sorted(long_df["연"].unique().tolist())
     if not years:
         st.info("연도 정보가 없습니다.")
-        return 0, 1, "당월", []
+        return 0, 1, "월 누적", []
 
     default_year = pick_default_year(years)
     months_for_default = sorted(long_df[long_df["연"] == default_year]["월"].unique().tolist())
     default_month = months_for_default[-1] if months_for_default else 1
 
     c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
+
     with c1:
         sel_year = st.selectbox(
             "기준 연도",
@@ -245,14 +252,33 @@ def render_section_selector(long_df: pd.DataFrame, title: str, key_prefix: str) 
             key=f"{key_prefix}month",
         )
 
-    with c3:
-        agg_mode = st.radio(
-            "집계 기준",
-            ["당월", "월 누적"],
-            index=0,
-            horizontal=True,
-            key=f"{key_prefix}mode",
-        )
+    # fixed_mode가 있으면 그걸 강제
+    if fixed_mode in ["당월", "월 누적"]:
+        agg_mode = fixed_mode
+        with c3:
+            st.markdown(
+                "<div style='padding-top:28px;font-size:14px;color:#666;'>집계 기준: <b>월 누적</b></div>"
+                if fixed_mode == "월 누적"
+                else "<div style='padding-top:28px;font-size:14px;color:#666;'>집계 기준: <b>당월</b></div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        if show_mode:
+            with c3:
+                agg_mode = st.radio(
+                    "집계 기준",
+                    ["당월", "월 누적"],
+                    index=0,
+                    horizontal=True,
+                    key=f"{key_prefix}mode",
+                )
+        else:
+            agg_mode = "월 누적"
+            with c3:
+                st.markdown(
+                    "<div style='padding-top:28px;font-size:14px;color:#666;'>집계 기준: <b>월 누적</b></div>",
+                    unsafe_allow_html=True,
+                )
 
     st.markdown(
         f"<div style='margin-top:-4px;font-size:13px;color:#666;'>"
@@ -291,26 +317,22 @@ def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: s
 def render_rate_donut(rate: float, color: str):
     """도넛 크기 2/3 축소."""
     if pd.isna(rate) or np.isnan(rate):
-        st.markdown(
-            "<div style='font-size:14px;color:#999;text-align:center;'>데이터 없음</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<div style='font-size:14px;color:#999;text-align:center;'>데이터 없음</div>",
+                    unsafe_allow_html=True)
         return
 
     filled = max(min(float(rate), 200.0), 0.0)
     empty = max(100.0 - filled, 0.0)
 
     fig = go.Figure(
-        data=[
-            go.Pie(
-                values=[filled, empty],
-                hole=0.7,
-                sort=False,
-                direction="clockwise",
-                marker=dict(colors=[color, "#e5e7eb"]),
-                textinfo="none",
-            )
-        ]
+        data=[go.Pie(
+            values=[filled, empty],
+            hole=0.7,
+            sort=False,
+            direction="clockwise",
+            marker=dict(colors=[color, "#e5e7eb"]),
+            textinfo="none",
+        )]
     )
 
     fig.update_layout(
@@ -318,14 +340,12 @@ def render_rate_donut(rate: float, color: str):
         width=240,
         height=240,
         margin=dict(l=0, r=0, t=0, b=0),
-        annotations=[
-            dict(
-                text=f"{rate:.1f}%",
-                x=0.5, y=0.5,
-                showarrow=False,
-                font=dict(size=20, color=color, family="NanumGothic"),
-            )
-        ],
+        annotations=[dict(
+            text=f"{rate:.1f}%",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=20, color=color, family="NanumGothic"),
+        )],
     )
     st.plotly_chart(fig, use_container_width=False)
 
@@ -378,7 +398,8 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         else:
             main_prev = fmt_num_safe(prev_total)
             sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률({mode_tag}) {fmt_rate(prev_rate)}"
-        render_metric_card("📙", f"전년 동월{' 누적' if agg_mode=='월 누적' else ''} 실적 ({unit_label})", main_prev, sub3, color="#f97316")
+        render_metric_card("📙", f"전년 동월{' 누적' if agg_mode=='월 누적' else ''} 실적 ({unit_label})",
+                           main_prev, sub3, color="#f97316")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("#### 🎯 달성률 요약")
@@ -427,7 +448,6 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             np.nan
         )
 
-        # 전년 결합
         if has_prev:
             prev_only = apply_period_filter(long_df, prev_year, sel_month, agg_mode)
             prev_only = prev_only[prev_only["계획/실적"] == "실적"].copy()
@@ -453,7 +473,6 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
                         unsafe_allow_html=True)
             return
 
-        # ---- 2건 뽑기 (계획 abs max 1건, 전년 abs max 1건) + fallback ----
         plan_rank = pivot.copy()
         plan_rank["_abs_plan"] = plan_rank["계획대비차이"].abs()
         plan_rank = plan_rank.sort_values("_abs_plan", ascending=False)
@@ -507,14 +526,12 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         )
 
     except Exception:
-        st.markdown(
-            "<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>",
+                    unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────
-# 1. 월별 추이 (섹션별 기준 적용)
+# 1. 월별 추이 (★ 무조건 '월 누적' 고정)
 # ─────────────────────────────────────────────────────────
 def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📈 월별 추이 그래프")
@@ -523,8 +540,10 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         st.info("데이터가 없습니다.")
         return
 
+    # fixed_mode="월 누적" + show_mode=False 로 라디오 제거
     sel_year, sel_month, agg_mode, years_all = render_section_selector(
-        long_df, "월별 추이 그래프", key_prefix + "trend_base_"
+        long_df, "월별 추이 그래프", key_prefix + "trend_base_",
+        fixed_mode="월 누적", show_mode=False
     )
 
     years = years_all
@@ -610,7 +629,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
 
 
 # ─────────────────────────────────────────────────────────
-# 2. 연간(=기준기간) 계획대비 요약 (섹션별 기준 적용)
+# 2. 계획대비 실적 요약 (기준 선택 유지)
 # ─────────────────────────────────────────────────────────
 def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📊 계획대비 실적 요약 — 그룹별 분석")
@@ -716,7 +735,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 3. 계획대비 월별 실적 (섹션별 기준 적용)
+# 3. 계획대비 월별 실적 (★ 무조건 '월 누적' 고정)
 # ─────────────────────────────────────────────────────────
 def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧮 계획대비 월별 실적 (용도 선택)")
@@ -725,10 +744,12 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         st.info("데이터가 없습니다.")
         return
 
+    # fixed_mode="월 누적" + show_mode=False 로 라디오 제거
     sel_year, sel_month, agg_mode, years_all = render_section_selector(
-        long_df, "계획대비 월별 실적", key_prefix + "pv_base_"
+        long_df, "계획대비 월별 실적", key_prefix + "pv_base_",
+        fixed_mode="월 누적", show_mode=False
     )
-    mode_tag = "당월" if agg_mode == "당월" else f"1~{sel_month}월 누적"
+    mode_tag = f"1~{sel_month}월 누적"
 
     groups_all = sorted(g for g in long_df["그룹"].unique() if g is not None)
     available_groups = ["총량"] + [g for g in GROUP_OPTIONS if g != "총량" and g in groups_all]
@@ -847,7 +868,7 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
 
 
 # ─────────────────────────────────────────────────────────
-# 4. 기간별 스택 + 라인 (섹션별 기준 적용)
+# 4. 기간별 스택 + 라인 (기준 선택 유지)
 # ─────────────────────────────────────────────────────────
 def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧱 기간별 용도 누적 실적 (스택형 막대 + 라인)")
@@ -987,7 +1008,7 @@ else:
                 unit = "MJ"
                 prefix = "mj_"
 
-            # 0) 월간 핵심 대시보드 (섹션별 기준 선택)
+            # 0) 월간 핵심 대시보드
             monthly_core_dashboard(df_long, unit_label=unit, key_prefix=prefix + "dash_")
 
             st.markdown("---")
