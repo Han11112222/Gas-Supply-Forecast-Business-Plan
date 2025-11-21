@@ -142,6 +142,11 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     return long_dict
 
 
+def pick_default_year(years: List[int]) -> int:
+    """연도 디폴트는 무조건 2025 우선."""
+    return 2025 if 2025 in years else years[-1]
+
+
 # ─────────────────────────────────────────────────────────
 # 0. 상단 월간 핵심 대시보드
 # ─────────────────────────────────────────────────────────
@@ -181,7 +186,7 @@ def render_metric_card(
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_rate_donut(rate: float, color: str, key: str):
+def render_rate_donut(rate: float, color: str):
     """달성률 도넛 파이 (%만 표시)."""
     if pd.isna(rate) or np.isnan(rate):
         st.markdown(
@@ -232,10 +237,21 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         st.info("연도 정보가 없습니다.")
         return
 
-    # 디폴트 연도: 2025 있으면 2025, 없으면 최신
-    default_year = 2025 if 2025 in years else years[-1]
+    default_year = pick_default_year(years)
+
+    # default_year에 월이 없으면: 월이 있는 가장 최근 연도로 자동 보정
     months_for_default = sorted(long_df[long_df["연"] == default_year]["월"].unique())
-    default_month = months_for_default[-1] if months_for_default else 1
+    if not months_for_default:
+        # 월 있는 연도 찾기
+        years_with_months = [y for y in years if len(long_df[long_df["연"] == y]["월"].unique()) > 0]
+        if years_with_months:
+            default_year = pick_default_year(years_with_months)
+            months_for_default = sorted(long_df[long_df["연"] == default_year]["월"].unique())
+        else:
+            st.warning("월 데이터가 있는 연도가 없어. 하단 분석만 표시할게.")
+            return
+
+    default_month = months_for_default[-1]
 
     c_year, c_month, c_mode, c_info = st.columns([1.2, 1.2, 1.6, 3])
 
@@ -249,8 +265,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     months = sorted(long_df[long_df["연"] == sel_year]["월"].unique().tolist())
     if not months:
-        st.info("선택 연도에 월 데이터가 없습니다.")
-        return
+        # 선택 연도에 월이 없으면 자동으로 default_year로 되돌림
+        sel_year = default_year
+        months = months_for_default
+        st.warning(f"{sel_year}년에는 월 데이터가 없어서 {default_year}년 기준으로 표시했어.")
 
     with c_month:
         sel_month = st.selectbox(
@@ -286,7 +304,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             cond_m = long_df["월"] == month
         return cond_y & cond_m
 
-    mask_this = mask_for(sel_year, sel_month, agg_mode == "월 누적")
+    is_cum = (agg_mode == "월 누적")
+    mode_tag = "당월" if not is_cum else "연도누적(월 누적)"
+
+    mask_this = mask_for(sel_year, sel_month, is_cum)
     base_this = long_df[mask_this].copy()
 
     plan_total = base_this[base_this["계획/실적"] == "계획"]["값"].sum()
@@ -295,7 +316,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     prev_year = sel_year - 1
     has_prev = prev_year in years
     if has_prev:
-        mask_prev = mask_for(prev_year, sel_month, agg_mode == "월 누적")
+        mask_prev = mask_for(prev_year, sel_month, is_cum)
         base_prev = long_df[mask_prev]
         prev_total = base_prev[base_prev["계획/실적"] == "실적"]["값"].sum()
     else:
@@ -322,7 +343,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         )
 
     with k2:
-        sub2 = f"계획대비 차이 {fmt_num_safe(plan_diff)} · 달성률 {fmt_rate(plan_rate)}"
+        sub2 = f"계획대비 차이 {fmt_num_safe(plan_diff)} · 달성률({mode_tag}) {fmt_rate(plan_rate)}"
         render_metric_card(
             "📗",
             f"실적 합계 ({unit_label})",
@@ -337,10 +358,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             sub3 = "전년 데이터 없음"
         else:
             main_prev = fmt_num_safe(prev_total)
-            sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률 {fmt_rate(prev_rate)}"
+            sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률({mode_tag}) {fmt_rate(prev_rate)}"
         render_metric_card(
             "📙",
-            f"전년 동월{' 누적' if agg_mode == '월 누적' else ''} 실적 ({unit_label})",
+            f"전년 동월{' 누적' if is_cum else ''} 실적 ({unit_label})",
             main_prev,
             sub3,
             color="#f97316",
@@ -350,29 +371,17 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("#### 🎯 달성률 요약")
 
-    mode_tag = "당월" if agg_mode == "당월" else "연도누적(월 누적)"
-
     d1, d2 = st.columns(2)
     with d1:
-        render_rate_donut(plan_rate, "#16a34a", key=f"{key_prefix}donut_plan")
-        st.markdown(
-            f"<div style='text-align:center;font-size:14px;color:#444;margin-top:-6px;'>"
-            f"계획 달성률 · {mode_tag}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        render_rate_donut(plan_rate, "#16a34a")
+        st.caption(f"계획 달성률 · {mode_tag}")
     with d2:
-        render_rate_donut(prev_rate, "#f97316", key=f"{key_prefix}donut_prev")
-        st.markdown(
-            f"<div style='text-align:center;font-size:14px;color:#444;margin-top:-6px;'>"
-            f"전년대비 증감률 · {mode_tag}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        render_rate_donut(prev_rate, "#f97316")
+        st.caption(f"전년대비 증감률 · {mode_tag}")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 특이사항 (핵심 이슈 1~2건)  ※ Arrow 안 타게 HTML로 출력
+    # ── 특이사항 (핵심 이슈 1~2건)
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -496,8 +505,11 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         st.info("연도 정보가 없습니다.")
         return
 
+    # 디폴트 연도들에 2025 우선 포함
     preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
-    default_years = preferred_years if preferred_years else [years[-1]]
+    if 2025 in years and 2025 not in preferred_years:
+        preferred_years.append(2025)
+    default_years = preferred_years if preferred_years else [pick_default_year(years)]
 
     sel_years = st.multiselect(
         "연도 선택(그래프)",
@@ -582,7 +594,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
 
 
 # ─────────────────────────────────────────────────────────
-# 2. 연간 계획대비 요약 (그래프 → 표, Y-1 토글)
+# 2. 연간 계획대비 요약
 # ─────────────────────────────────────────────────────────
 def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📊 연간 계획대비 실적 요약 — 그룹별 분석")
@@ -596,10 +608,8 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         st.info("연도 정보가 없습니다.")
         return
 
-    if 2025 in years:
-        default_index = years.index(2025)
-    else:
-        default_index = len(years) - 1
+    default_year = pick_default_year(years)
+    default_index = years.index(default_year)
 
     col1, col2, col3 = st.columns([2, 2, 1.5])
     with col1:
@@ -748,7 +758,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 3. 계획대비 월별 (Y계획, Y실적, 옵션 Y-1실적 + 증감 라인)
+# 3. 계획대비 월별
 # ─────────────────────────────────────────────────────────
 def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧮 계획대비 월별 실적 (용도 선택)")
@@ -768,7 +778,8 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         st.info("연도 정보가 없습니다.")
         return
 
-    default_year_index = years.index(2025) if 2025 in years else len(years) - 1
+    default_year = pick_default_year(years)
+    default_year_index = years.index(default_year)
 
     col1, col2, col3 = st.columns([2, 2, 1.5])
     with col1:
@@ -914,7 +925,7 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
 
 
 # ─────────────────────────────────────────────────────────
-# 4. 기간별 스택 + 가정용/합계 라인 (실적 기준)
+# 4. 기간별 스택 + 라인 (실적 기준)
 # ─────────────────────────────────────────────────────────
 def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧱 기간별 용도 누적 실적 (스택형 막대 + 라인)")
@@ -929,7 +940,9 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         return
 
     preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
-    default_years = preferred_years if preferred_years else [years[-1]]
+    if 2025 in years and 2025 not in preferred_years:
+        preferred_years.append(2025)
+    default_years = preferred_years if preferred_years else [pick_default_year(years)]
 
     sel_years = st.multiselect(
         "연도 선택(스택 그래프)",
