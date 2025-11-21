@@ -236,8 +236,8 @@ def render_rate_donut(rate: float, color: str):
 
     fig.update_layout(
         showlegend=False,
-        width=240,   # ✅ 축소
-        height=240,  # ✅ 축소
+        width=240,
+        height=240,
         margin=dict(l=0, r=0, t=0, b=0),
         annotations=[
             dict(
@@ -369,7 +369,6 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률({mode_tag}) {fmt_rate(prev_rate)}"
         render_metric_card("📙", f"전년 동월{' 누적' if is_cum else ''} 실적 ({unit_label})", main_prev, sub3, color="#f97316")
 
-    # 도넛 2개를 가운데 정렬 느낌으로 배치
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("#### 🎯 달성률 요약")
 
@@ -383,7 +382,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 특이사항
+    # ── 특이사항 (핵심 이슈 2건: 계획대비 | 전년대비 절대차이 최대)
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -395,7 +394,12 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         det["그룹/용도"] = det["그룹"] + " / " + det["용도"]
 
         pivot = (
-            det.pivot_table(index="그룹/용도", columns="계획/실적", values="값", aggfunc="sum")
+            det.pivot_table(
+                index="그룹/용도",
+                columns="계획/실적",
+                values="값",
+                aggfunc="sum"
+            )
             .fillna(0.0)
             .rename_axis(None, axis=1)
         )
@@ -406,38 +410,68 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         pivot["계획대비차이"] = pivot["실적"] - pivot["계획"]
         with np.errstate(divide="ignore", invalid="ignore"):
             pivot["계획달성률(%)"] = np.where(
-                pivot["계획"] != 0, (pivot["실적"] / pivot["계획"]) * 100.0, np.nan
+                pivot["계획"] != 0,
+                (pivot["실적"] / pivot["계획"]) * 100.0,
+                np.nan
             )
 
         if has_prev:
             prev_only = base_prev[base_prev["계획/실적"] == "실적"].copy()
             prev_only["그룹/용도"] = prev_only["그룹"] + " / " + prev_only["용도"]
-            prev_grp = prev_only.groupby("그룹/용도", as_index=False)["값"].sum().rename(columns={"값":"전년실적"})
+            prev_grp = (
+                prev_only.groupby("그룹/용도", as_index=False)["값"]
+                .sum()
+                .rename(columns={"값": "전년실적"})
+            )
             pivot = pivot.merge(prev_grp, on="그룹/용도", how="left")
         else:
             pivot["전년실적"] = np.nan
 
+        pivot["전년대비차이"] = pivot["실적"] - pivot["전년실적"]
         with np.errstate(divide="ignore", invalid="ignore"):
-            pivot["전년대비차이"] = pivot["실적"] - pivot["전년실적"]
             pivot["전년대비증감률(%)"] = np.where(
-                pivot["전년실적"] != 0, (pivot["실적"] / pivot["전년실적"]) * 100.0, np.nan
+                pivot["전년실적"] != 0,
+                (pivot["실적"] / pivot["전년실적"]) * 100.0,
+                np.nan
             )
 
-        worst_plan = pivot[pivot["계획"] > 0].sort_values("계획달성률(%)").head(1)
-        worst_prev = pivot[~pivot["전년실적"].isna() & (pivot["전년실적"] > 0)].sort_values("전년대비증감률(%)").head(1)
+        # ✅ 1) 계획대비 절대차이 최대 1건
+        plan_issue = pivot.copy()
+        plan_issue["abs_plan_diff"] = plan_issue["계획대비차이"].abs()
+        plan_issue = plan_issue.sort_values("abs_plan_diff", ascending=False).head(1)
 
-        core_issues = pd.concat([worst_plan, worst_prev])
+        # ✅ 2) 전년대비 절대차이 최대 1건 (전년실적 유효한 항목만)
+        prev_issue = pivot.copy()
+        prev_issue = prev_issue[~prev_issue["전년실적"].isna()]
+        prev_issue["abs_prev_diff"] = prev_issue["전년대비차이"].abs()
+        prev_issue = prev_issue.sort_values("abs_prev_diff", ascending=False).head(1)
+
+        core_issues = pd.concat([plan_issue, prev_issue])
         core_issues = core_issues[~core_issues.index.duplicated(keep="first")].head(2)
 
         if core_issues.empty:
-            st.markdown("<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>",
+                unsafe_allow_html=True,
+            )
             return
 
-        core_issues = core_issues.reset_index().rename(columns={"index": "그룹/용도"})
+        # ✅ reset_index 후 숫자 index 컬럼 제거
+        core_issues.index.name = "그룹/용도"
+        core_issues = core_issues.reset_index()
+
+        if "index" in core_issues.columns:
+            core_issues = core_issues.drop(columns=["index"])
 
         show_cols = [
-            "그룹/용도","계획","실적","계획대비차이","계획달성률(%)",
-            "전년실적","전년대비차이","전년대비증감률(%)"
+            "그룹/용도",
+            "계획",
+            "실적",
+            "계획대비차이",
+            "계획달성률(%)",
+            "전년실적",
+            "전년대비차이",
+            "전년대비증감률(%)",
         ]
         disp = core_issues[show_cols].copy()
 
@@ -458,7 +492,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         )
 
     except Exception:
-        st.markdown("<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>",
+            unsafe_allow_html=True,
+        )
 
 
 # ─────────────────────────────────────────────────────────
@@ -618,7 +655,6 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     pivot["달성률(%)"] = np.where(pivot["계획"] != 0, (pivot["실적"]/pivot["계획"])*100.0, np.nan)
     pivot = pivot[["계획","실적","차이(실적-계획)","달성률(%)"]]
 
-    # 막대그래프
     plan_series = grp_this[grp_this["계획/실적"]=="계획"].set_index(idx_col)["값"]
     act_series  = grp_this[grp_this["계획/실적"]=="실적"].set_index(idx_col)["값"]
     prev_series = grp_prev.set_index(idx_col)["전년실적"] if not grp_prev.empty else pd.Series(dtype=float)
