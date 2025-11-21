@@ -1,6 +1,6 @@
 import io
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,21 +29,29 @@ st.set_page_config(page_title="도시가스 판매량 계획/실적 분석", lay
 
 DEFAULT_XLSX = "판매량(계획_실적).xlsx"
 
-# 엑셀 헤더 → 분석 그룹 매핑
+# 엑셀 헤더 → 분석 그룹 매핑 (명시적 매핑)
 USE_COL_TO_GROUP: Dict[str, str] = {
     "취사용": "가정용",
     "개별난방용": "가정용",
     "중앙난방용": "가정용",
     "자가열전용": "가정용",
+
     "일반용": "영업용",
+
     "업무난방용": "업무용",
     "냉방용": "업무용",
     "주한미군": "업무용",
+
     "산업용": "산업용",
+
     "수송용(CNG)": "수송용",
     "수송용(BIO)": "수송용",
+
+    # 🔥 열병합 컬럼명 변형 대비
+    "열병합용": "열병합",
     "열병합용1": "열병합",
     "열병합용2": "열병합",
+
     "연료전지용": "연료전지",
     "열전용설비용": "열전용설비용",
 }
@@ -60,19 +68,16 @@ GROUP_OPTIONS: List[str] = [
     "열전용설비용",
 ]
 
-# 계획대비 월별 그래프용 색상 (모두 푸른 계열 + 전년은 연회색)
-COLOR_PLAN = "rgba(0, 90, 200, 1)"       # 기준연도 계획
-COLOR_ACT = "rgba(0, 150, 255, 1)"      # 기준연도 실적
-COLOR_PREV = "rgba(190, 190, 190, 1)"   # 전년 실적 (연회색)
-COLOR_DIFF = "rgba(0, 80, 160, 1)"      # 증감 선
+# 색상
+COLOR_PLAN = "rgba(0, 90, 200, 1)"
+COLOR_ACT = "rgba(0, 150, 255, 1)"
+COLOR_PREV = "rgba(190, 190, 190, 1)"
+COLOR_DIFF = "rgba(0, 80, 160, 1)"
 
 
 # ─────────────────────────────────────────────────────────
 # 공통 유틸
 # ─────────────────────────────────────────────────────────
-def fmt_num(v: float) -> str:
-    return f"{v:,.0f}"
-
 def fmt_num_safe(v) -> str:
     if pd.isna(v):
         return "-"
@@ -86,7 +91,6 @@ def fmt_rate(v: float) -> str:
         return "-"
     return f"{float(v):,.1f}%"
 
-
 def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "Unnamed: 0" in out.columns:
@@ -96,6 +100,30 @@ def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def keyword_group(col: str) -> Optional[str]:
+    """컬럼명이 약간 달라도 잡히도록 키워드 기반 보정."""
+    c = str(col)
+
+    if "열병합" in c:
+        return "열병합"
+    if "연료전지" in c:
+        return "연료전지"
+    if "수송용" in c:
+        return "수송용"
+    if "열전용" in c:
+        return "열전용설비용"
+    if c in ["산업용"]:
+        return "산업용"
+    if c in ["일반용"]:
+        return "영업용"
+    if any(k in c for k in ["취사용", "난방용", "자가열"]):
+        return "가정용"
+    if any(k in c for k in ["업무", "냉방", "주한미군"]):
+        return "업무용"
+
+    return None
+
+
 def make_long(plan_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
     """wide → long (연·월·그룹·용도·계획/실적·값)."""
     plan_df = _clean_base(plan_df)
@@ -103,9 +131,20 @@ def make_long(plan_df: pd.DataFrame, actual_df: pd.DataFrame) -> pd.DataFrame:
 
     records = []
     for label, df in [("계획", plan_df), ("실적", actual_df)]:
-        for col, group in USE_COL_TO_GROUP.items():
-            if col not in df.columns:
+        for col in df.columns:
+            if col in ["연", "월"]:
                 continue
+
+            # 1) 명시적 매핑 우선
+            group = USE_COL_TO_GROUP.get(col)
+
+            # 2) 없으면 키워드 기반 보정
+            if group is None:
+                group = keyword_group(col)
+
+            if group is None:
+                continue  # 그래도 못 잡으면 스킵
+
             base = df[["연", "월"]].copy()
             base["그룹"] = group
             base["용도"] = col
@@ -143,21 +182,13 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 def pick_default_year(years: List[int]) -> int:
-    """연도 디폴트는 무조건 2025 우선."""
     return 2025 if 2025 in years else years[-1]
 
 
 # ─────────────────────────────────────────────────────────
 # 0. 상단 월간 핵심 대시보드
 # ─────────────────────────────────────────────────────────
-def render_metric_card(
-    icon: str,
-    title: str,
-    main: str,
-    sub: str = "",
-    color: str = "#1f77b4",
-):
-    """HTML 카드 렌더링 (아이콘·숫자 크게)."""
+def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: str = "#1f77b4"):
     html = f"""
     <div style="
         background-color:#ffffff;
@@ -169,25 +200,17 @@ def render_metric_card(
         flex-direction:column;
         justify-content:flex-start;
     ">
-        <div style="font-size:44px; line-height:1; margin-bottom:8px;">
-            {icon}
-        </div>
-        <div style="font-size:18px; font-weight:650; color:#444; margin-bottom:6px;">
-            {title}
-        </div>
-        <div style="font-size:34px; font-weight:750; color:{color}; margin-bottom:8px;">
-            {main}
-        </div>
-        <div style="font-size:14px; color:#444; min-height:20px; font-weight:500;">
-            {sub}
-        </div>
+        <div style="font-size:44px; line-height:1; margin-bottom:8px;">{icon}</div>
+        <div style="font-size:18px; font-weight:650; color:#444; margin-bottom:6px;">{title}</div>
+        <div style="font-size:34px; font-weight:750; color:{color}; margin-bottom:8px;">{main}</div>
+        <div style="font-size:14px; color:#444; min-height:20px; font-weight:500;">{sub}</div>
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
 
 
 def render_rate_donut(rate: float, color: str):
-    """달성률 도넛 파이 (%만 표시)."""
+    """도넛 크기 2/3 수준으로 축소."""
     if pd.isna(rate) or np.isnan(rate):
         st.markdown(
             "<div style='font-size:14px;color:#999;text-align:center;'>데이터 없음</div>",
@@ -210,19 +233,22 @@ def render_rate_donut(rate: float, color: str):
             )
         ]
     )
+
     fig.update_layout(
         showlegend=False,
+        width=240,   # ✅ 축소
+        height=240,  # ✅ 축소
         margin=dict(l=0, r=0, t=0, b=0),
         annotations=[
             dict(
                 text=f"{rate:.1f}%",
                 x=0.5, y=0.5,
                 showarrow=False,
-                font=dict(size=22, color=color, family="NanumGothic"),
+                font=dict(size=20, color=color, family="NanumGothic"),
             )
         ],
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=False)
 
 
 def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
@@ -239,10 +265,8 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     default_year = pick_default_year(years)
 
-    # default_year에 월이 없으면: 월이 있는 가장 최근 연도로 자동 보정
     months_for_default = sorted(long_df[long_df["연"] == default_year]["월"].unique())
     if not months_for_default:
-        # 월 있는 연도 찾기
         years_with_months = [y for y in years if len(long_df[long_df["연"] == y]["월"].unique()) > 0]
         if years_with_months:
             default_year = pick_default_year(years_with_months)
@@ -265,10 +289,9 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     months = sorted(long_df[long_df["연"] == sel_year]["월"].unique().tolist())
     if not months:
-        # 선택 연도에 월이 없으면 자동으로 default_year로 되돌림
         sel_year = default_year
         months = months_for_default
-        st.warning(f"{sel_year}년에는 월 데이터가 없어서 {default_year}년 기준으로 표시했어.")
+        st.warning(f"선택 연도에 월 데이터가 없어 {default_year}년 기준으로 표시했어.")
 
     with c_month:
         sel_month = st.selectbox(
@@ -287,6 +310,9 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             key=f"{key_prefix}dash_mode",
         )
 
+    is_cum = (agg_mode == "월 누적")
+    mode_tag = "당월" if not is_cum else "연도누적(월 누적)"
+
     with c_info:
         st.markdown(
             f"<div style='padding-top:26px;font-size:15px;color:#555;'>"
@@ -298,14 +324,8 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     def mask_for(year: int, month: int, cumulative: bool):
         cond_y = long_df["연"] == year
-        if cumulative:
-            cond_m = (long_df["월"] >= 1) & (long_df["월"] <= month)
-        else:
-            cond_m = long_df["월"] == month
+        cond_m = (long_df["월"].between(1, month)) if cumulative else (long_df["월"] == month)
         return cond_y & cond_m
-
-    is_cum = (agg_mode == "월 누적")
-    mode_tag = "당월" if not is_cum else "연도누적(월 누적)"
 
     mask_this = mask_for(sel_year, sel_month, is_cum)
     base_this = long_df[mask_this].copy()
@@ -324,33 +344,21 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         prev_total = np.nan
 
     plan_diff = act_total - plan_total if not pd.isna(plan_total) else np.nan
-    plan_rate = (act_total / plan_total * 100.0) if (not pd.isna(plan_total) and plan_total > 0) else np.nan
+    plan_rate = (act_total / plan_total * 100.0) if (plan_total and plan_total > 0) else np.nan
 
     prev_diff = act_total - prev_total if not pd.isna(prev_total) else np.nan
-    prev_rate = (act_total / prev_total * 100.0) if (not pd.isna(prev_total) and prev_total > 0) else np.nan
+    prev_rate = (act_total / prev_total * 100.0) if (prev_total and prev_total > 0) else np.nan
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     k1, k2, k3 = st.columns(3)
 
     with k1:
-        render_metric_card(
-            "📘",
-            f"계획 합계 ({unit_label})",
-            fmt_num_safe(plan_total),
-            "",
-            color="#2563eb",
-        )
+        render_metric_card("📘", f"계획 합계 ({unit_label})", fmt_num_safe(plan_total), "", color="#2563eb")
 
     with k2:
         sub2 = f"계획대비 차이 {fmt_num_safe(plan_diff)} · 달성률({mode_tag}) {fmt_rate(plan_rate)}"
-        render_metric_card(
-            "📗",
-            f"실적 합계 ({unit_label})",
-            fmt_num_safe(act_total),
-            sub2,
-            color="#16a34a",
-        )
+        render_metric_card("📗", f"실적 합계 ({unit_label})", fmt_num_safe(act_total), sub2, color="#16a34a")
 
     with k3:
         if pd.isna(prev_total):
@@ -359,29 +367,23 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         else:
             main_prev = fmt_num_safe(prev_total)
             sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률({mode_tag}) {fmt_rate(prev_rate)}"
-        render_metric_card(
-            "📙",
-            f"전년 동월{' 누적' if is_cum else ''} 실적 ({unit_label})",
-            main_prev,
-            sub3,
-            color="#f97316",
-        )
+        render_metric_card("📙", f"전년 동월{' 누적' if is_cum else ''} 실적 ({unit_label})", main_prev, sub3, color="#f97316")
 
-    # 달성률 도넛 + 당월/연도누적 표기
+    # 도넛 2개를 가운데 정렬 느낌으로 배치
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("#### 🎯 달성률 요약")
 
-    d1, d2 = st.columns(2)
-    with d1:
+    d1, d2, d3, d4, d5 = st.columns([1, 2, 1, 2, 1])
+    with d2:
         render_rate_donut(plan_rate, "#16a34a")
         st.caption(f"계획 달성률 · {mode_tag}")
-    with d2:
+    with d4:
         render_rate_donut(prev_rate, "#f97316")
         st.caption(f"전년대비 증감률 · {mode_tag}")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 특이사항 (핵심 이슈 1~2건)
+    # 특이사항
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -393,13 +395,10 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         det["그룹/용도"] = det["그룹"] + " / " + det["용도"]
 
         pivot = (
-            det.pivot_table(
-                index="그룹/용도", columns="계획/실적", values="값", aggfunc="sum"
-            )
+            det.pivot_table(index="그룹/용도", columns="계획/실적", values="값", aggfunc="sum")
             .fillna(0.0)
             .rename_axis(None, axis=1)
         )
-
         for c in ["계획", "실적"]:
             if c not in pivot.columns:
                 pivot[c] = 0.0
@@ -407,19 +406,13 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         pivot["계획대비차이"] = pivot["실적"] - pivot["계획"]
         with np.errstate(divide="ignore", invalid="ignore"):
             pivot["계획달성률(%)"] = np.where(
-                pivot["계획"] != 0,
-                (pivot["실적"] / pivot["계획"]) * 100.0,
-                np.nan,
+                pivot["계획"] != 0, (pivot["실적"] / pivot["계획"]) * 100.0, np.nan
             )
 
         if has_prev:
             prev_only = base_prev[base_prev["계획/실적"] == "실적"].copy()
             prev_only["그룹/용도"] = prev_only["그룹"] + " / " + prev_only["용도"]
-            prev_grp = (
-                prev_only.groupby("그룹/용도", as_index=False)["값"]
-                .sum()
-                .rename(columns={"값": "전년실적"})
-            )
+            prev_grp = prev_only.groupby("그룹/용도", as_index=False)["값"].sum().rename(columns={"값":"전년실적"})
             pivot = pivot.merge(prev_grp, on="그룹/용도", how="left")
         else:
             pivot["전년실적"] = np.nan
@@ -427,37 +420,24 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         with np.errstate(divide="ignore", invalid="ignore"):
             pivot["전년대비차이"] = pivot["실적"] - pivot["전년실적"]
             pivot["전년대비증감률(%)"] = np.where(
-                pivot["전년실적"] != 0,
-                (pivot["실적"] / pivot["전년실적"]) * 100.0,
-                np.nan,
+                pivot["전년실적"] != 0, (pivot["실적"] / pivot["전년실적"]) * 100.0, np.nan
             )
 
         worst_plan = pivot[pivot["계획"] > 0].sort_values("계획달성률(%)").head(1)
-        worst_prev = pivot[~pivot["전년실적"].isna() & (pivot["전년실적"] > 0)].sort_values(
-            "전년대비증감률(%)"
-        ).head(1)
+        worst_prev = pivot[~pivot["전년실적"].isna() & (pivot["전년실적"] > 0)].sort_values("전년대비증감률(%)").head(1)
 
         core_issues = pd.concat([worst_plan, worst_prev])
         core_issues = core_issues[~core_issues.index.duplicated(keep="first")].head(2)
 
         if core_issues.empty:
-            st.markdown(
-                "<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<div style='font-size:14px;color:#666;'>표시할 특이사항이 없습니다.</div>", unsafe_allow_html=True)
             return
 
         core_issues = core_issues.reset_index().rename(columns={"index": "그룹/용도"})
 
         show_cols = [
-            "그룹/용도",
-            "계획",
-            "실적",
-            "계획대비차이",
-            "계획달성률(%)",
-            "전년실적",
-            "전년대비차이",
-            "전년대비증감률(%)",
+            "그룹/용도","계획","실적","계획대비차이","계획달성률(%)",
+            "전년실적","전년대비차이","전년대비증감률(%)"
         ]
         disp = core_issues[show_cols].copy()
 
@@ -471,23 +451,14 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
             if c in disp.columns:
                 disp[c] = disp[c].apply(fmt_rate)
 
-        disp = disp.astype(str)
-
-        html_table = disp.to_html(index=False, escape=False)
+        html_table = disp.astype(str).to_html(index=False, escape=False)
         st.markdown(
-            f"""
-            <div style="border-radius:12px; overflow-x:auto; border:1px solid #eee;">
-                {html_table}
-            </div>
-            """,
+            f"<div style='border-radius:12px; overflow-x:auto; border:1px solid #eee;'>{html_table}</div>",
             unsafe_allow_html=True,
         )
 
     except Exception:
-        st.markdown(
-            "<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<div style='font-size:14px;color:#666;'>특이사항 계산 중 오류가 발생해 표시를 생략했어.</div>", unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -505,7 +476,6 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         st.info("연도 정보가 없습니다.")
         return
 
-    # 디폴트 연도들에 2025 우선 포함
     preferred_years = [y for y in [2021, 2022, 2023, 2024, 2025] if y in years]
     if 2025 in years and 2025 not in preferred_years:
         preferred_years.append(2025)
@@ -542,53 +512,41 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
 
     if sel_group == "총량":
         plot_df = (
-            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
-            .sum()
-            .sort_values(["연", "월", "계획/실적"])
+            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"].sum()
+            .sort_values(["연","월","계획/실적"])
         )
         plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["계획/실적"]
     else:
         base = base[base["그룹"] == sel_group]
         plot_df = (
-            base.groupby(["연", "월", "계획/실적"], as_index=False)["값"]
-            .sum()
-            .sort_values(["연", "월", "계획/실적"])
+            base.groupby(["연","월","계획/실적"], as_index=False)["값"].sum()
+            .sort_values(["연","월","계획/실적"])
         )
-        plot_df["라벨"] = (
-            plot_df["연"].astype(str)
-            + "년 · "
-            + sel_group
-            + " · "
-            + plot_df["계획/실적"]
-        )
+        plot_df["라벨"] = plot_df["연"].astype(str)+"년 · "+sel_group+" · "+plot_df["계획/실적"]
 
     if plot_df.empty:
         st.info("선택 조건에 해당하는 데이터가 없어.")
         return
 
     fig = px.line(
-        plot_df,
-        x="월",
-        y="값",
-        color="라벨",
+        plot_df, x="월", y="값", color="라벨",
         line_dash="계획/실적",
-        category_orders={"계획/실적": ["실적", "계획"]},
-        line_dash_map={"실적": "solid", "계획": "dash"},
+        category_orders={"계획/실적":["실적","계획"]},
+        line_dash_map={"실적":"solid","계획":"dash"},
         markers=True,
     )
     fig.update_layout(
         xaxis=dict(dtick=1),
         yaxis_title=f"판매량 ({unit_label})",
         legend_title="연도 / 구분",
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=10,r=10,t=10,b=10),
     )
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("##### 🔢 월별 수치표")
     table = (
         plot_df.pivot_table(index="월", columns="라벨", values="값", aggfunc="sum")
-        .sort_index()
-        .fillna(0.0)
+        .sort_index().fillna(0.0)
     )
     st.dataframe(table.style.format("{:,.0f}"), use_container_width=True)
 
@@ -611,7 +569,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     default_year = pick_default_year(years)
     default_index = years.index(default_year)
 
-    col1, col2, col3 = st.columns([2, 2, 1.5])
+    col1, col2, col3 = st.columns([2,2,1.5])
     with col1:
         sel_year = st.selectbox(
             "연도 선택(집계)",
@@ -623,14 +581,11 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         view_mode = st.radio(
             "표시 기준",
             ["그룹별 합계", "그룹·용도 세부"],
-            index=0,
-            horizontal=True,
+            index=0, horizontal=True,
             key=f"{key_prefix}summary_mode",
         )
     with col3:
-        include_prev = st.toggle(
-            "(Y-1) 포함", value=False, key=f"{key_prefix}summary_prev"
-        )
+        include_prev = st.toggle("(Y-1) 포함", value=False, key=f"{key_prefix}summary_prev")
 
     base_this = long_df[long_df["연"] == sel_year].copy()
     if base_this.empty:
@@ -638,119 +593,71 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         return
 
     prev_year = sel_year - 1
-    if include_prev:
-        base_prev = long_df[
-            (long_df["연"] == prev_year) & (long_df["계획/실적"] == "실적")
-        ].copy()
-    else:
-        base_prev = pd.DataFrame([])
+    base_prev = long_df[(long_df["연"] == prev_year) & (long_df["계획/실적"] == "실적")].copy() if include_prev else pd.DataFrame([])
 
     if view_mode == "그룹별 합계":
-        grp_this = (
-            base_this.groupby(["그룹", "계획/실적"], as_index=False)["값"]
-            .sum()
-            .sort_values(["그룹", "계획/실적"])
-        )
+        grp_this = base_this.groupby(["그룹","계획/실적"], as_index=False)["값"].sum()
         idx_col = "그룹"
-
-        if not base_prev.empty:
-            grp_prev = (
-                base_prev.groupby("그룹", as_index=False)["값"]
-                .sum()
-                .rename(columns={"값": "전년실적"})
-            )
-        else:
-            grp_prev = pd.DataFrame([])
-
-    else:  # 그룹·용도 세부
-        base_this2 = base_this.copy()
-        base_this2["그룹/용도"] = base_this2["그룹"] + " / " + base_this2["용도"]
-        grp_this = (
-            base_this2.groupby(["그룹/용도", "계획/실적"], as_index=False)["값"]
-            .sum()
-            .sort_values(["그룹/용도", "계획/실적"])
-        )
+        grp_prev = base_prev.groupby("그룹", as_index=False)["값"].sum().rename(columns={"값":"전년실적"}) if not base_prev.empty else pd.DataFrame([])
+    else:
+        base_this["그룹/용도"] = base_this["그룹"] + " / " + base_this["용도"]
+        grp_this = base_this.groupby(["그룹/용도","계획/실적"], as_index=False)["값"].sum()
         idx_col = "그룹/용도"
-
         if not base_prev.empty:
-            base_prev2 = base_prev.copy()
-            base_prev2["그룹/용도"] = (
-                base_prev2["그룹"] + " / " + base_prev2["용도"]
-            )
-            grp_prev = (
-                base_prev2.groupby("그룹/용도", as_index=False)["값"]
-                .sum()
-                .rename(columns={"값": "전년실적"})
-            )
+            base_prev["그룹/용도"] = base_prev["그룹"] + " / " + base_prev["용도"]
+            grp_prev = base_prev.groupby("그룹/용도", as_index=False)["값"].sum().rename(columns={"값":"전년실적"})
         else:
             grp_prev = pd.DataFrame([])
 
-    pivot = (
-        grp_this.pivot(index=idx_col, columns="계획/실적", values="값")
-        .fillna(0.0)
-        .rename_axis(None, axis=1)
-    )
-    for c in ["계획", "실적"]:
+    pivot = grp_this.pivot(index=idx_col, columns="계획/실적", values="값").fillna(0.0)
+    for c in ["계획","실적"]:
         if c not in pivot.columns:
             pivot[c] = 0.0
 
     pivot["차이(실적-계획)"] = pivot["실적"] - pivot["계획"]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pivot["달성률(%)"] = np.where(
-            pivot["계획"] != 0,
-            (pivot["실적"] / pivot["계획"]) * 100.0,
-            np.nan,
-        )
-    pivot = pivot[["계획", "실적", "차이(실적-계획)", "달성률(%)"]]
+    pivot["달성률(%)"] = np.where(pivot["계획"] != 0, (pivot["실적"]/pivot["계획"])*100.0, np.nan)
+    pivot = pivot[["계획","실적","차이(실적-계획)","달성률(%)"]]
 
-    plan_series = grp_this[grp_this["계획/실적"] == "계획"].set_index(idx_col)["값"]
-    act_series = grp_this[grp_this["계획/실적"] == "실적"].set_index(idx_col)["값"]
+    # 막대그래프
+    plan_series = grp_this[grp_this["계획/실적"]=="계획"].set_index(idx_col)["값"]
+    act_series  = grp_this[grp_this["계획/실적"]=="실적"].set_index(idx_col)["값"]
+    prev_series = grp_prev.set_index(idx_col)["전년실적"] if not grp_prev.empty else pd.Series(dtype=float)
 
-    if not base_prev.empty:
-        prev_series = grp_prev.set_index(idx_col)["전년실적"]
-    else:
-        prev_series = pd.Series(dtype=float)
-
-    cats = sorted(set(plan_series.index) | set(act_series.index) | set(prev_series.index))
-    if not cats:
-        cats = list(pivot.index.astype(str))
-
-    y_plan = [plan_series.get(c, 0.0) for c in cats]
-    y_act = [act_series.get(c, 0.0) for c in cats]
-    y_prev = [prev_series.get(c, 0.0) for c in cats] if not prev_series.empty else None
+    cats = sorted(set(plan_series.index)|set(act_series.index)|set(prev_series.index))
+    y_plan = [plan_series.get(c,0.0) for c in cats]
+    y_act  = [act_series.get(c,0.0) for c in cats]
+    y_prev = [prev_series.get(c,0.0) for c in cats] if not prev_series.empty else None
 
     st.markdown("#### 📊 선택 연도 그룹별 계획·실적 막대그래프")
-
     fig_bar = go.Figure()
     fig_bar.add_bar(x=cats, y=y_plan, name=f"{sel_year} 계획", marker_color=COLOR_PLAN)
-    fig_bar.add_bar(x=cats, y=y_act, name=f"{sel_year} 실적", marker_color=COLOR_ACT)
-
+    fig_bar.add_bar(x=cats, y=y_act,  name=f"{sel_year} 실적", marker_color=COLOR_ACT)
     if include_prev and y_prev is not None:
         fig_bar.add_bar(x=cats, y=y_prev, name=f"{prev_year} 실적", marker_color=COLOR_PREV)
 
     fig_bar.update_traces(width=0.25, selector=dict(type="bar"))
     fig_bar.update_layout(
         barmode="group",
-        bargap=0.15,
-        bargroupgap=0.2,
         xaxis_title=idx_col,
         yaxis_title=f"연간 합계 ({unit_label})",
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=10,r=10,t=10,b=10),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
     st.markdown("##### 🔢 연간 요약 표")
-    styled = pivot.reset_index().style.format(
-        {"계획": "{:,.0f}", "실적": "{:,.0f}", "차이(실적-계획)": "{:,.0f}", "달성률(%)": "{:,.1f}"}
+    st.dataframe(
+        pivot.reset_index().style.format(
+            {"계획":"{:,.0f}","실적":"{:,.0f}","차이(실적-계획)":"{:,.0f}","달성률(%)":"{:,.1f}"}
+        ),
+        use_container_width=True
     )
-    st.dataframe(styled, use_container_width=True)
 
     tot_plan = float(pivot["계획"].sum())
-    tot_act = float(pivot["실적"].sum())
+    tot_act  = float(pivot["실적"].sum())
     diff = tot_act - tot_plan
-    rate = (tot_act / tot_plan * 100.0) if tot_plan != 0 else np.nan
+    rate = (tot_act/tot_plan*100.0) if tot_plan != 0 else np.nan
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1,c2,c3,c4 = st.columns(4)
     c1.metric("계획 합계", f"{tot_plan:,.0f}")
     c2.metric("실적 합계", f"{tot_act:,.0f}")
     c3.metric("차이(실적-계획)", f"{diff:,.0f}")
@@ -781,7 +688,7 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
     default_year = pick_default_year(years)
     default_year_index = years.index(default_year)
 
-    col1, col2, col3 = st.columns([2, 2, 1.5])
+    col1,col2,col3 = st.columns([2,2,1.5])
     with col1:
         try:
             sel_group = st.segmented_control(
@@ -813,19 +720,18 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
 
     period = st.radio(
         "기간",
-        ["연간", "상반기(1~6월)", "하반기(7~12월)"],
-        index=0,
-        horizontal=False,
+        ["연간","상반기(1~6월)","하반기(7~12월)"],
+        index=0, horizontal=False,
         key=f"{key_prefix}pv_period",
     )
 
-    base = long_df.copy() if sel_group == "총량" else long_df[long_df["그룹"] == sel_group].copy()
+    base = long_df.copy() if sel_group == "총량" else long_df[long_df["그룹"]==sel_group].copy()
 
     if period == "상반기(1~6월)":
-        base = base[(base["월"] >= 1) & (base["월"] <= 6)]
+        base = base[base["월"].between(1,6)]
         period_label = "상반기"
     elif period == "하반기(7~12월)":
-        base = base[(base["월"] >= 7) & (base["월"] <= 12)]
+        base = base[base["월"].between(7,12)]
         period_label = "하반기"
     else:
         period_label = "연간"
@@ -834,62 +740,42 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         st.info("선택 조건에 해당하는 데이터가 없어.")
         return
 
-    df_year = base[base["연"] == sel_year]
+    df_year = base[base["연"]==sel_year]
     if df_year.empty:
         st.info("선택한 연도의 데이터가 없어.")
         return
 
-    prev_year = sel_year - 1
-    df_prev = base[(base["연"] == prev_year) & (base["계획/실적"] == "실적")] if include_prev else pd.DataFrame([])
+    prev_year = sel_year-1
+    df_prev = base[(base["연"]==prev_year) & (base["계획/실적"]=="실적")] if include_prev else pd.DataFrame([])
 
-    bars = (
-        df_year.groupby(["월", "계획/실적"], as_index=False)["값"]
-        .sum()
-        .sort_values(["월", "계획/실적"])
-    )
+    bars = df_year.groupby(["월","계획/실적"], as_index=False)["값"].sum().sort_values(["월","계획/실적"])
 
-    plan_series = bars[bars["계획/실적"] == "계획"].set_index("월")["값"].sort_index()
-    actual_series = bars[bars["계획/실적"] == "실적"].set_index("월")["값"].sort_index()
+    plan_series = bars[bars["계획/실적"]=="계획"].set_index("월")["값"].sort_index()
+    actual_series = bars[bars["계획/실적"]=="실적"].set_index("월")["값"].sort_index()
 
-    months_all = sorted(set(plan_series.index) | set(actual_series.index))
+    months_all = sorted(set(plan_series.index)|set(actual_series.index))
     plan_aligned = plan_series.reindex(months_all).fillna(0.0)
     actual_aligned = actual_series.reindex(months_all).fillna(0.0)
     diff_series = actual_aligned - plan_aligned
 
     fig = go.Figure()
-
-    for status, name, color in [
+    for status,name,color in [
         ("계획", f"{sel_year}년 계획", COLOR_PLAN),
         ("실적", f"{sel_year}년 실적", COLOR_ACT),
     ]:
-        sub = bars[bars["계획/실적"] == status]
-        if sub.empty:
-            continue
-        fig.add_bar(
-            x=sub["월"],
-            y=sub["값"],
-            name=name,
-            width=0.25,
-            marker_color=color,
-        )
+        sub = bars[bars["계획/실적"]==status]
+        if not sub.empty:
+            fig.add_bar(x=sub["월"], y=sub["값"], name=name, width=0.25, marker_color=color)
 
     if include_prev and not df_prev.empty:
         prev_group = df_prev.groupby("월", as_index=False)["값"].sum().sort_values("월")
-        fig.add_bar(
-            x=prev_group["월"],
-            y=prev_group["값"],
-            name=f"{prev_year}년 실적",
-            width=0.25,
-            marker_color=COLOR_PREV,
-        )
+        fig.add_bar(x=prev_group["월"], y=prev_group["값"], name=f"{prev_year}년 실적", width=0.25, marker_color=COLOR_PREV)
 
     if len(diff_series) > 0:
         fig.add_scatter(
-            x=months_all,
-            y=diff_series.values,
+            x=months_all, y=diff_series.values,
             mode="lines+markers+text",
-            name="증감(실적-계획)",
-            yaxis="y2",
+            name="증감(실적-계획)", yaxis="y2",
             line=dict(color=COLOR_DIFF, width=2),
             marker=dict(color=COLOR_DIFF),
             text=[f"{v:,.0f}" for v in diff_series.values],
@@ -902,25 +788,18 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         xaxis_title="월",
         yaxis_title=f"판매량 ({unit_label})",
         xaxis=dict(dtick=1),
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10,r=10,t=40,b=10),
         barmode="group",
-        yaxis2=dict(
-            title="증감(실적-계획)",
-            overlaying="y",
-            side="right",
-            showgrid=False,
-        ),
+        yaxis2=dict(title="증감(실적-계획)", overlaying="y", side="right", showgrid=False),
     )
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("##### 🔢 월별 계획·실적·전년실적·증감 수치")
     table = bars.pivot(index="월", columns="계획/실적", values="값").sort_index().fillna(0.0)
-
     if include_prev and not df_prev.empty:
         prev_tbl = df_prev.groupby("월", as_index=False)["값"].sum().set_index("월")["값"]
         table["전년실적"] = prev_tbl
-
-    table["증감(실적-계획)"] = table.get("실적", 0.0) - table.get("계획", 0.0)
+    table["증감(실적-계획)"] = table.get("실적",0.0) - table.get("계획",0.0)
     st.dataframe(table.style.format("{:,.0f}"), use_container_width=True)
 
 
@@ -956,19 +835,18 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
     period = st.radio(
         "기간",
-        ["연간", "상반기(1~6월)", "하반기(7~12월)"],
-        index=0,
-        horizontal=True,
+        ["연간","상반기(1~6월)","하반기(7~12월)"],
+        index=0, horizontal=True,
         key=f"{key_prefix}period",
     )
 
-    base = long_df[(long_df["연"].isin(sel_years)) & (long_df["계획/실적"] == "실적")].copy()
+    base = long_df[(long_df["연"].isin(sel_years)) & (long_df["계획/실적"]=="실적")].copy()
 
     if period == "상반기(1~6월)":
-        base = base[(base["월"] >= 1) & (base["월"] <= 6)]
+        base = base[base["월"].between(1,6)]
         period_label = "상반기(1~6월)"
     elif period == "하반기(7~12월)":
-        base = base[(base["월"] >= 7) & (base["월"] <= 12)]
+        base = base[base["월"].between(7,12)]
         period_label = "하반기(7~12월)"
     else:
         period_label = "연간"
@@ -977,43 +855,36 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         st.info("선택 조건에 해당하는 데이터가 없어.")
         return
 
-    grp = base.groupby(["연", "그룹"], as_index=False)["값"].sum()
+    grp = base.groupby(["연","그룹"], as_index=False)["값"].sum()
 
     fig = px.bar(grp, x="연", y="값", color="그룹", barmode="stack")
     fig.update_traces(width=0.4, selector=dict(type="bar"))
 
-    total = grp.groupby("연", as_index=False)["값"].sum().rename(columns={"값": "합계"})
-    home = grp[grp["그룹"] == "가정용"].groupby("연", as_index=False)["값"].sum().rename(columns={"값": "가정용"})
+    total = grp.groupby("연", as_index=False)["값"].sum().rename(columns={"값":"합계"})
+    home = grp[grp["그룹"]=="가정용"].groupby("연", as_index=False)["값"].sum().rename(columns={"값":"가정용"})
 
-    if not total.empty:
-        fig.add_scatter(
-            x=total["연"],
-            y=total["합계"],
-            mode="lines+markers+text",
-            name="합계",
-            line=dict(dash="dash"),
-            text=total["합계"].apply(lambda v: f"{v:,.0f}"),
-            textposition="top center",
-            textfont=dict(size=11),
-        )
+    fig.add_scatter(
+        x=total["연"], y=total["합계"],
+        mode="lines+markers+text", name="합계",
+        line=dict(dash="dash"),
+        text=total["합계"].apply(lambda v: f"{v:,.0f}"),
+        textposition="top center", textfont=dict(size=11),
+    )
 
     if not home.empty:
         fig.add_scatter(
-            x=home["연"],
-            y=home["가정용"],
-            mode="lines+markers+text",
-            name="가정용",
+            x=home["연"], y=home["가정용"],
+            mode="lines+markers+text", name="가정용",
             line=dict(dash="dot"),
             text=home["가정용"].apply(lambda v: f"{v:,.0f}"),
-            textposition="top center",
-            textfont=dict(size=11),
+            textposition="top center", textfont=dict(size=11),
         )
 
     fig.update_layout(
         title=f"{period_label} 용도별 실적 판매량 (누적)",
         xaxis_title="연도",
         yaxis_title=f"판매량 ({unit_label})",
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=10,r=10,t=40,b=10),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -1060,9 +931,7 @@ if "열량" in long_dict:
     tab_labels.append("열량 기준 (MJ)")
 
 if not tab_labels:
-    st.info(
-        "유효한 시트를 찾지 못했어. 파일에 '계획_부피', '실적_부피' (또는 '계획_열량', '실적_열량') 시트가 있는지 한 번 체크해 줘."
-    )
+    st.info("유효한 시트를 찾지 못했어. 파일 시트명을 확인해 줘.")
 else:
     tabs = st.tabs(tab_labels)
     for tab_label, tab in zip(tab_labels, tabs):
@@ -1076,19 +945,16 @@ else:
                 unit = "MJ"
                 prefix = "mj_"
 
-            # 맨 상단: 월간 핵심 대시보드
             monthly_core_dashboard(df_long, unit_label=unit, key_prefix=prefix + "dash_")
 
             st.markdown("---")
 
-            # 상단: 실적 중심
             st.markdown("## 📊 실적 분석")
             monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix)
             half_year_stacked_section(df_long, unit_label=unit, key_prefix=prefix + "stack_")
 
             st.markdown("---")
 
-            # 하단: 계획대비 분석
             st.markdown("## 📏 계획대비 분석")
             yearly_summary_section(df_long, unit_label=unit, key_prefix=prefix + "summary_")
             plan_vs_actual_usage_section(df_long, unit_label=unit, key_prefix=prefix + "pv_")
