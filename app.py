@@ -989,7 +989,7 @@ def clean_supply_day_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────
-# 공급량 섹션들
+# 공급량 섹션들 (모든 표시 단위: GJ)
 # ─────────────────────────────────────────────────────────
 def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     st.markdown("## 📌 월간 핵심 대시보드 (공급량)")
@@ -1028,8 +1028,11 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     else:
         this_period = this_period[this_period["월"] <= sel_month]
 
-    plan_total = this_period[plan_choice].sum(skipna=True)
-    act_total = this_period[act_col].sum(skipna=True)
+    # MJ → GJ 변환
+    plan_total_mj = this_period[plan_choice].sum(skipna=True)
+    act_total_mj = this_period[act_col].sum(skipna=True)
+    plan_total = plan_total_mj / 1000.0
+    act_total = act_total_mj / 1000.0
 
     prev_year = sel_year - 1
     has_prev = prev_year in years_all
@@ -1039,7 +1042,8 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
             prev_period = prev_period[prev_period["월"] == sel_month]
         else:
             prev_period = prev_period[prev_period["월"] <= sel_month]
-        prev_total = prev_period[act_col].sum(skipna=True)
+        prev_total_mj = prev_period[act_col].sum(skipna=True)
+        prev_total = prev_total_mj / 1000.0
     else:
         prev_total = np.nan
 
@@ -1053,11 +1057,11 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     k1, k2, k3 = st.columns(3)
 
     with k1:
-        render_metric_card("📘", f"{plan_label} 계획 합계 (MJ)", fmt_num_safe(plan_total), "", color="#2563eb")
+        render_metric_card("📘", f"{plan_label} 계획 합계 (GJ)", fmt_num_safe(plan_total), "", color="#2563eb")
 
     with k2:
         sub2 = f"계획대비 차이 {fmt_num_safe(plan_diff)} · 달성률({mode_tag}) {fmt_rate(plan_rate)}"
-        render_metric_card("📗", f"실적 합계 (MJ)", fmt_num_safe(act_total), sub2, color="#16a34a")
+        render_metric_card("📗", f"실적 합계 (GJ)", fmt_num_safe(act_total), sub2, color="#16a34a")
 
     with k3:
         if pd.isna(prev_total):
@@ -1066,7 +1070,7 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
         else:
             main_prev = fmt_num_safe(prev_total)
             sub3 = f"전년대비 차이 {fmt_num_safe(prev_diff)} · 증감률({mode_tag}) {fmt_rate(prev_rate)}"
-        render_metric_card("📙", f"전년 동월{' 누적' if agg_mode=='연 누적' else ''} 실적 (MJ)",
+        render_metric_card("📙", f"전년 동월{' 누적' if agg_mode=='연 누적' else ''} 실적 (GJ)",
                            main_prev, sub3, color="#f97316")
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1108,11 +1112,15 @@ def supply_monthly_trend(month_df: pd.DataFrame, plan_choice: str, plan_label: s
     base = base[base["월"] <= sel_month]  # 연 누적 고정
 
     act_col = "실적_공급량(MJ)"
+    # MJ → GJ 변환
+    vals_mj = np.column_stack([base[act_col].values, base[plan_choice].values])
+    vals_gj = vals_mj / 1000.0
+
     plot_df = pd.DataFrame({
         "연": np.repeat(base["연"].values, 2),
         "월": np.repeat(base["월"].values, 2),
         "구분": ["실적", "계획"] * len(base),
-        "값": np.ravel(np.column_stack([base[act_col].values, base[plan_choice].values]))
+        "값": np.ravel(vals_gj),
     })
 
     plot_df["라벨"] = plot_df["연"].astype(str) + "년 · " + plot_df["구분"]
@@ -1126,7 +1134,7 @@ def supply_monthly_trend(month_df: pd.DataFrame, plan_choice: str, plan_label: s
     )
     fig.update_layout(
         xaxis=dict(dtick=1),
-        yaxis_title="공급량 (MJ)",
+        yaxis_title="공급량 (GJ)",
         legend_title="연도 / 구분",
         margin=dict(l=10, r=10, t=60, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.12, xanchor="right", x=1),
@@ -1155,14 +1163,19 @@ def supply_plan_vs_actual_monthly(month_df: pd.DataFrame, plan_choice: str, plan
     base_prev = month_df[month_df["연"] == prev_year].copy()
     base_prev = base_prev[base_prev["월"] <= sel_month][["월", act_col]].sort_values("월")
 
+    # MJ → GJ
+    plan_gj = bars[plan_choice] / 1000.0
+    act_gj = bars[act_col] / 1000.0
+    prev_gj = base_prev[act_col] / 1000.0 if not base_prev.empty else None
+
     fig = go.Figure()
-    fig.add_bar(x=bars["월"], y=bars[plan_choice], name=f"{sel_year} {plan_label} 계획", width=0.25, marker_color=COLOR_PLAN)
-    fig.add_bar(x=bars["월"], y=bars[act_col], name=f"{sel_year} 실적", width=0.25, marker_color=COLOR_ACT)
+    fig.add_bar(x=bars["월"], y=plan_gj, name=f"{sel_year} {plan_label} 계획", width=0.25, marker_color=COLOR_PLAN)
+    fig.add_bar(x=bars["월"], y=act_gj, name=f"{sel_year} 실적", width=0.25, marker_color=COLOR_ACT)
 
     if not base_prev.empty:
-        fig.add_bar(x=base_prev["월"], y=base_prev[act_col], name=f"{prev_year} 실적", width=0.25, marker_color=COLOR_PREV)
+        fig.add_bar(x=base_prev["월"], y=prev_gj, name=f"{prev_year} 실적", width=0.25, marker_color=COLOR_PREV)
 
-    diff = bars[act_col].fillna(0.0) - bars[plan_choice].fillna(0.0)
+    diff = act_gj.fillna(0.0) - plan_gj.fillna(0.0)
     fig.add_scatter(
         x=bars["월"], y=diff,
         mode="lines+markers+text",
@@ -1177,11 +1190,11 @@ def supply_plan_vs_actual_monthly(month_df: pd.DataFrame, plan_choice: str, plan
     fig.update_layout(
         title=f"{sel_year}년 공급량 계획 vs 실적 (1~{sel_month}월 연 누적)",
         xaxis_title="월",
-        yaxis_title="공급량 (MJ)",
+        yaxis_title="공급량 (GJ)",
         xaxis=dict(dtick=1),
         margin=dict(l=10, r=10, t=40, b=10),
         barmode="group",
-        yaxis2=dict(title="증감(실적-계획)", overlaying="y", side="right", showgrid=False),
+        yaxis2=dict(title="증감(실적-계획) (GJ)", overlaying="y", side="right", showgrid=False),
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -1208,9 +1221,10 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
         st.info("선택월 월별계획 데이터가 없어.")
         return
 
-    month_plan = float(mrow.iloc[0][plan_choice])
+    month_plan_mj = float(mrow.iloc[0][plan_choice])
     days_in_month = int(pd.Timestamp(sel_year, sel_month, 1).days_in_month)
-    daily_plan = month_plan / days_in_month
+    daily_plan_mj = month_plan_mj / days_in_month
+    daily_plan_gj = daily_plan_mj / 1000.0
 
     this_start = pd.Timestamp(sel_year, sel_month, 1)
     this_end = this_start + pd.offsets.MonthEnd(1)
@@ -1221,16 +1235,16 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
         return
 
     this_df["일"] = this_df["일자"].dt.day
-    this_df["편차(실적-일계획)"] = this_df[act_col] - daily_plan
+    this_df["편차(실적-일계획)_GJ"] = (this_df[act_col] - daily_plan_mj) / 1000.0
 
     fig = go.Figure()
     fig.add_bar(
-        x=this_df["일"], y=this_df[act_col],
+        x=this_df["일"], y=this_df[act_col] / 1000.0,
         name=f"{sel_year}년 {sel_month}월 일별실적",
         marker_color=COLOR_ACT, opacity=0.85
     )
     fig.add_scatter(
-        x=this_df["일"], y=[daily_plan]*len(this_df),
+        x=this_df["일"], y=[daily_plan_gj]*len(this_df),
         mode="lines",
         name=f"일일계획량({plan_label})",
         line=dict(color=COLOR_PLAN, width=3, dash="dash")
@@ -1239,23 +1253,24 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
     fig.update_layout(
         title=f"{sel_year}년 {sel_month}월: 일별실적 vs 일일계획량(=월계획/{days_in_month}일)",
         xaxis_title="일",
-        yaxis_title="공급량 (MJ)",
+        yaxis_title="공급량 (GJ)",
         xaxis=dict(dtick=1),
         margin=dict(l=10, r=10, t=50, b=10),
     )
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("##### 🔢 일별 편차 요약")
-    show = this_df[["일자", act_col, "편차(실적-일계획)"]].copy()
-    show.columns = ["일자", "일별실적(MJ)", "편차(실적-일계획)(MJ)"]
-    st.dataframe(show.style.format("{:,.0f}", subset=["일별실적(MJ)","편차(실적-일계획)(MJ)"]),
+    show = this_df[["일자", act_col, "편차(실적-일계획)_GJ"]].copy()
+    show.columns = ["일자", "일별실적(GJ)", "편차(실적-일계획)(GJ)"]
+    show["일별실적(GJ)"] = show["일별실적(GJ)"].apply(lambda v: v/1000.0)
+    st.dataframe(show.style.format("{:,.1f}", subset=["일별실적(GJ)","편차(실적-일계획)(GJ)"]),
                  use_container_width=True)
 
 
 def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
                      sel_year:int, sel_month:int, plan_choice:str, plan_label:str,
                      key_prefix:str=""):
-    """공급량(일) 탭: 당월 vs 전년동월 + 일일계획 baseline"""
+    """공급량(일) 탭: 당월 vs 전년동월 + 일일계획 baseline + 명예의 전당 + 기온 매트릭스"""
     st.markdown("## 📅 공급량 분석(일)")
 
     if day_df.empty or month_df.empty:
@@ -1267,15 +1282,16 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         st.info("일별 공급량(MJ) 컬럼이 없어.")
         return
 
-    # 월 계획 → 일일계획
+    # 월 계획 → 일일계획 (MJ)
     mrow = month_df[(month_df["연"]==sel_year) & (month_df["월"]==sel_month)]
     if mrow.empty:
         st.info("선택월 월별계획 데이터가 없어.")
         return
 
-    month_plan = float(mrow.iloc[0][plan_choice])
+    month_plan_mj = float(mrow.iloc[0][plan_choice])
     days_in_month = int(pd.Timestamp(sel_year, sel_month, 1).days_in_month)
-    daily_plan = month_plan / days_in_month
+    daily_plan_mj = month_plan_mj / days_in_month
+    daily_plan_gj = daily_plan_mj / 1000.0
 
     # 당년도/전년도 동일월 필터
     this_start = pd.Timestamp(sel_year, sel_month, 1)
@@ -1296,20 +1312,20 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     if not prev_df.empty:
         prev_df["일"] = prev_df["일자"].dt.day
 
-    # 1) 패턴 비교 라인
+    # 1) 패턴 비교 라인 (GJ)
     st.markdown("### 📈 일별 패턴 비교 (당년도 vs 전년동월)")
     fig1 = go.Figure()
 
     if not this_df.empty:
         fig1.add_scatter(
-            x=this_df["일"], y=this_df[act_col],
+            x=this_df["일"], y=this_df[act_col] / 1000.0,
             mode="lines+markers",
             name=f"{sel_year}년 {sel_month}월 실적",
             line=dict(color=COLOR_ACT, width=2)
         )
     if not prev_df.empty:
         fig1.add_scatter(
-            x=prev_df["일"], y=prev_df[act_col],
+            x=prev_df["일"], y=prev_df[act_col] / 1000.0,
             mode="lines+markers",
             name=f"{sel_year-1}년 {sel_month}월 실적",
             line=dict(color=COLOR_PREV, width=2, dash="dash")
@@ -1317,7 +1333,7 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
 
     fig1.add_scatter(
         x=list(range(1, days_in_month+1)),
-        y=[daily_plan]*days_in_month,
+        y=[daily_plan_gj]*days_in_month,
         mode="lines",
         name=f"일일계획량({plan_label})",
         line=dict(color=COLOR_PLAN, width=3, dash="dot")
@@ -1326,20 +1342,20 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     fig1.update_layout(
         title=f"{sel_year}년 {sel_month}월 일별 공급량 패턴",
         xaxis_title="일",
-        yaxis_title="공급량 (MJ)",
+        yaxis_title="공급량 (GJ)",
         xaxis=dict(dtick=1),
         margin=dict(l=10, r=10, t=50, b=10),
     )
     st.plotly_chart(fig1, use_container_width=True)
 
-    # 2) 편차 막대
+    # 2) 편차 막대 (GJ)
     if not this_df.empty:
         st.markdown("### 🧮 일일계획 대비 편차 (당년도)")
-        this_df["편차(실적-일계획)"] = this_df[act_col] - daily_plan
+        this_df["편차_GJ"] = (this_df[act_col] - daily_plan_mj) / 1000.0
 
         fig2 = go.Figure()
         fig2.add_bar(
-            x=this_df["일"], y=this_df["편차(실적-일계획)"],
+            x=this_df["일"], y=this_df["편차_GJ"],
             name="편차(실적-일계획)",
             marker_color=COLOR_DIFF
         )
@@ -1348,21 +1364,84 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         fig2.update_layout(
             title=f"{sel_year}년 {sel_month}월 편차(실적-일계획)",
             xaxis_title="일",
-            yaxis_title="편차 (MJ)",
+            yaxis_title="편차 (GJ)",
             xaxis=dict(dtick=1),
             margin=dict(l=10, r=10, t=40, b=10),
         )
         st.plotly_chart(fig2, use_container_width=True)
 
         st.markdown("##### 🔢 일별 수치표")
-        show = this_df[["일자", act_col, "편차(실적-일계획)"]].copy()
-        show.columns = ["일자", "일별실적(MJ)", "편차(실적-일계획)(MJ)"]
-        st.dataframe(show.style.format("{:,.0f}", subset=["일별실적(MJ)","편차(실적-일계획)(MJ)"]),
+        show = this_df[["일자", act_col, "편차_GJ"]].copy()
+        show.columns = ["일자", "일별실적(GJ)", "편차(실적-일계획)(GJ)"]
+        show["일별실적(GJ)"] = show["일별실적(GJ)"].apply(lambda v: v/1000.0)
+        st.dataframe(show.style.format("{:,.1f}", subset=["일별실적(GJ)","편차(실적-일계획)(GJ)"]),
                      use_container_width=True)
+
+    # 3) 일일 공급량 명예의 전당
+    if not this_df.empty:
+        st.markdown("---")
+        st.markdown("### 🏆 일일 공급량 명예의 전당")
+
+        # 챔피온 일자 (공급량 최대)
+        idx_max = this_df[act_col].idxmax()
+        champ = this_df.loc[idx_max]
+        champ_date = champ["일자"]
+        champ_day = int(champ_date.day)
+        champ_supply_gj = float(champ[act_col]) / 1000.0
+        champ_temp = champ.get("평균기온(℃)", np.nan)
+
+        # 최근 3년 동일 월·일 평균 기온
+        avg_recent_temp = np.nan
+        years_info = ""
+        if "평균기온(℃)" in day_df.columns:
+            tmp = day_df.copy()
+            tmp["연"] = tmp["일자"].dt.year
+            tmp["월"] = tmp["일자"].dt.month
+            tmp["일"] = tmp["일자"].dt.day
+
+            cand_years = sorted([y for y in tmp["연"].unique() if y <= sel_year])
+            recent_years = cand_years[-3:] if len(cand_years) >= 3 else cand_years
+            if recent_years:
+                sub = tmp[
+                    (tmp["연"].isin(recent_years)) &
+                    (tmp["월"] == sel_month) &
+                    (tmp["일"] == champ_day)
+                ]
+                if not sub.empty:
+                    avg_recent_temp = sub["평균기온(℃)"].mean()
+                    years_info = "· 기준연도: " + ", ".join(f"{y}년" for y in recent_years)
+
+        temp_str = f"{champ_temp:.1f}℃" if not pd.isna(champ_temp) else "정보 없음"
+        recent_str = (
+            f"{avg_recent_temp:.1f}℃" if not pd.isna(avg_recent_temp) else "정보 없음"
+        )
+
+        html = f"""
+        <div style="border-radius:18px; padding:18px 22px; background:linear-gradient(90deg,#eff6ff,#fef9c3); box-shadow:0 4px 15px rgba(0,0,0,0.06);">
+          <div style="font-size:18px; font-weight:700; margin-bottom:6px;">🥇 공급량 챔피온</div>
+          <div style="font-size:16px; margin-bottom:4px;">
+            <b>{sel_year}년 {sel_month}월 {champ_day}일</b>
+          </div>
+          <div style="font-size:15px; margin-bottom:2px;">
+            · 공급량: <b>{champ_supply_gj:,.1f} GJ</b>
+          </div>
+          <div style="font-size:15px; margin-bottom:2px;">
+            · 당일 평균기온: <b>{temp_str}</b>
+          </div>
+          <div style="font-size:14px; color:#444;">
+            · 최근 3년 동일일 평균기온: <b>{recent_str}</b> {years_info}
+          </div>
+        </div>
+        """
+        st.markdown(html, unsafe_allow_html=True)
+
+    # 4) 기온 매트릭스 (일별 평균기온) — 공급량 분석(일) 하단
+    st.markdown("---")
+    temperature_matrix(day_df, default_month=sel_month, key_prefix="tempD_")
 
 
 def temperature_matrix(day_df: pd.DataFrame, default_month:int = 10, key_prefix:str="temp_"):
-    """공급량(월) 탭 하단: 일×연도 평균기온 매트릭스"""
+    """기온 매트릭스 (일별 평균기온)"""
     st.markdown("### 🌡️ 기온 매트릭스 (일별 평균기온)")
 
     if day_df.empty or "평균기온(℃)" not in day_df.columns:
@@ -1486,7 +1565,7 @@ if main_tab == "판매량 분석":
     st.markdown("## 1) 판매량 계획 / 실적 분석")
 
     long_dict: Dict[str, pd.DataFrame] = {}
-    if excel_bytes is not None:
+    if 'excel_bytes' in locals() and excel_bytes is not None:
         sheets = load_all_sheets(excel_bytes)
         long_dict = build_long_dict(sheets)
 
@@ -1535,7 +1614,7 @@ if main_tab == "판매량 분석":
 elif main_tab == "공급량 분석(월)":
     st.markdown("## 2) 공급량 분석(월)")
 
-    if supply_bytes is None:
+    if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
         month_df, day_df = load_supply_sheets(supply_bytes)
@@ -1565,7 +1644,7 @@ elif main_tab == "공급량 분석(월)":
 
                 st.markdown("---")
 
-                # 신규: 일일계획량 vs 일별실적
+                # 일일계획량 vs 일별실적
                 supply_daily_plan_vs_actual_in_month(
                     day_df, month_df,
                     sel_year, sel_month,
@@ -1575,7 +1654,7 @@ elif main_tab == "공급량 분석(월)":
 
                 st.markdown("---")
 
-                # 하단 기온 매트릭스 (네가 준 G.기온분석 동일 컨셉)
+                # 하단 기온 매트릭스
                 temperature_matrix(day_df, default_month=sel_month, key_prefix="tempM_")
 
 
@@ -1585,7 +1664,7 @@ elif main_tab == "공급량 분석(월)":
 else:
     st.markdown("## 3) 공급량 분석(일)")
 
-    if supply_bytes is None:
+    if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
         month_df, day_df = load_supply_sheets(supply_bytes)
