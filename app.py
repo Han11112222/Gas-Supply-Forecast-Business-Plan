@@ -1044,9 +1044,11 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     )
     plan_label = "사업계획" if "사업계획" in plan_choice else "마케팅팀계획"
 
+    # 기준선택용 long 더미 (★ 실적이 있는 월만 사용 → 최신 실적 월이 기본값이 됨)
     long_dummy = month_df[["연", "월"]].copy()
     long_dummy["계획/실적"] = "실적"
-    long_dummy["값"] = month_df[act_col].fillna(0.0)
+    long_dummy["값"] = pd.to_numeric(month_df[act_col], errors="coerce")
+    long_dummy = long_dummy.dropna(subset=["값"])
 
     sel_year, sel_month, agg_mode, years_all = render_section_selector(
         long_dummy, "월간 핵심 대시보드", key_prefix + "dash_base_"
@@ -1105,7 +1107,7 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
                            main_prev, sub3, color="#f97316")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("#### 🎯 달성률 요약")
+    st.markmarkdown("#### 🎯 달성률 요약")
 
     d1, d2, d3, d4, d5 = st.columns([1, 2, 1, 2, 1])
     with d2:
@@ -1886,11 +1888,12 @@ else:
             )
             plan_label = "사업계획" if "사업계획" in plan_choice else "마케팅팀계획"
 
-            # selector용 long 더미
+            # selector용 long 더미 (★ 실적 있는 월만 사용 → 최신 실적 월이 디폴트)
             act_col = "실적_공급량(MJ)"
             long_dummy = month_df[["연", "월"]].copy()
             long_dummy["계획/실적"] = "실적"
-            long_dummy["값"] = month_df[act_col].fillna(0.0)
+            long_dummy["값"] = pd.to_numeric(month_df[act_col], errors="coerce")
+            long_dummy = long_dummy.dropna(subset=["값"])
 
             sel_year, sel_month, agg_mode, years_all = render_section_selector(
                 long_dummy, "공급량(일) 기준 선택", "supplyD_base_",
