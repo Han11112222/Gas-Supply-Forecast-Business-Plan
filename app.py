@@ -93,13 +93,15 @@ def fmt_rate(v: float) -> str:
     return f"{float(v):,.1f}%"
 
 
-def center_style(styler: pd.io.formats.style.Styler) -> pd.io.formats.style.Styler:
+# ✅ 수정 코드 (타입힌트 제거)
+def center_style(styler):
     """모든 표 숫자 가운데 정렬용 공통 스타일."""
     styler = styler.set_properties(**{"text-align": "center"})
     styler = styler.set_table_styles(
         [dict(selector="th", props=[("text-align", "center")])]
     )
     return styler
+
 
 
 def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
