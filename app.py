@@ -1,10 +1,3 @@
-1번째 화면에서 맨앞에 숫자는 없어도 될것같아 삭제해줘.
-2번째 사진처럼 최대 공급량 기록 1,2,3위를 표현해주고, 좀 더 화려하게 아이콘 등을 넣어서 심플하게 표현해줘. 
-[공통적용]
-1. 모든탭에 표 숫자는 중간정렬을 해줘.
-2. 3번째 사진처럼 기준월의 디폴트는 가장 최신 실적이 들어있는 월을 우선 설정해줘.
-코드를 줄테니 수정보완해줘.
-
 import io
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -77,7 +70,7 @@ GROUP_OPTIONS: List[str] = [
 
 # 색상
 COLOR_PLAN = "rgba(0, 90, 200, 1)"
-COLOR_ACT  = "rgba(0, 150, 255, 1)"
+COLOR_ACT = "rgba(0, 150, 255, 1)"
 COLOR_PREV = "rgba(190, 190, 190, 1)"
 COLOR_DIFF = "rgba(0, 80, 160, 1)"
 
@@ -98,6 +91,15 @@ def fmt_rate(v: float) -> str:
     if pd.isna(v) or np.isnan(v):
         return "-"
     return f"{float(v):,.1f}%"
+
+
+def center_style(styler: pd.io.formats.style.Styler) -> pd.io.formats.style.Styler:
+    """모든 표 숫자 가운데 정렬용 공통 스타일."""
+    styler = styler.set_properties(**{"text-align": "center"})
+    styler = styler.set_table_styles(
+        [dict(selector="th", props=[("text-align", "center")])]
+    )
+    return styler
 
 
 def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
@@ -237,9 +239,12 @@ def render_section_selector(
         st.info("연도 정보가 없습니다.")
         return 0, 1, "연 누적", []
 
+    # 기본 연도 / 월 (앱 최초 로딩 시)
     default_year = pick_default_year(years)
-    months_for_default = sorted(long_df[long_df["연"] == default_year]["월"].unique().tolist())
-    default_month = months_for_default[-1] if months_for_default else 1
+    months_for_default_year = sorted(
+        long_df[long_df["연"] == default_year]["월"].unique().tolist()
+    )
+    default_month_global = months_for_default_year[-1] if months_for_default_year else 1
 
     c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
 
@@ -251,15 +256,17 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
+    # 선택된 연도 기준으로 "가장 최신 실적이 들어있는 월"을 디폴트로 사용
     months = sorted(long_df[long_df["연"] == sel_year]["월"].unique().tolist())
     if not months:
-        months = months_for_default
+        months = months_for_default_year or [default_month_global]
+    default_month_for_sel_year = months[-1]
 
     with c2:
         sel_month = st.selectbox(
             "기준 월",
             options=months,
-            index=months.index(default_month) if default_month in months else len(months) - 1,
+            index=months.index(default_month_for_sel_year),
             key=f"{key_prefix}month",
         )
 
@@ -532,7 +539,8 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
         for c in rate_cols:
             disp[c] = disp[c].apply(fmt_rate)
 
-        html_table = disp.astype(str).to_html(index=False, escape=False)
+        styled = center_style(disp.astype(str).style)
+        html_table = styled.to_html(index=False, escape=False)
         st.markdown(
             f"<div style='border-radius:12px; overflow-x:auto; border:1px solid #eee;'>{html_table}</div>",
             unsafe_allow_html=True,
@@ -638,7 +646,9 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .sort_index()
         .fillna(0.0)
     )
-    st.dataframe(table.style.format("{:,.0f}"), use_container_width=True)
+    table = table.reset_index()
+    styled = center_style(table.style.format("{:,.0f}"))
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -739,12 +749,13 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
     st.plotly_chart(fig_bar, use_container_width=True)
 
     st.markdown("##### 🔢 기준기간 요약 표")
-    st.dataframe(
-        pivot.reset_index().style.format(
+    pivot_reset = pivot.reset_index()
+    styled = center_style(
+        pivot_reset.style.format(
             {"계획": "{:,.0f}", "실적": "{:,.0f}", "차이(실적-계획)": "{:,.0f}", "달성률(%)": "{:,.1f}"}
-        ),
-        use_container_width=True
+        )
     )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -1283,8 +1294,41 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
     show = this_df[["일자", act_col, "편차(실적-일계획)_GJ"]].copy()
     show.columns = ["일자", "일별실적(GJ)", "편차(실적-일계획)(GJ)"]
     show["일별실적(GJ)"] = show["일별실적(GJ)"].apply(lambda v: v / 1000.0)
-    st.dataframe(show.style.format("{:,.1f}", subset=["일별실적(GJ)", "편차(실적-일계획)(GJ)"]),
-                 use_container_width=True)
+    styled = center_style(
+        show.style.format("{:,.1f}", subset=["일별실적(GJ)", "편차(실적-일계획)(GJ)"])
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def _render_supply_top_card(rank: int, row: pd.Series, icon: str, gradient: str):
+    date_str = f"{int(row['연'])}년 {int(row['월'])}월 {int(row['일'])}일"
+    supply_str = f"{row['공급량_GJ']:,.1f} GJ"
+    temp_str = f"{row['평균기온(℃)']:.1f}℃" if not pd.isna(row["평균기온(℃)"]) else "-"
+
+    html = f"""
+    <div style="
+        border-radius:20px;
+        padding:16px 20px;
+        background:{gradient};
+        box-shadow:0 4px 14px rgba(0,0,0,0.06);
+        margin-top:8px;
+    ">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+        <div style="font-size:26px;">{icon}</div>
+        <div style="font-size:15px; font-weight:700;">최대 공급량 기록 {rank}위</div>
+      </div>
+      <div style="font-size:14px; margin-bottom:3px;">
+        📅 <b>{date_str}</b>
+      </div>
+      <div style="font-size:14px; margin-bottom:3px;">
+        🔥 공급량: <b>{supply_str}</b>
+      </div>
+      <div style="font-size:14px;">
+        🌡 평균기온: <b>{temp_str}</b>
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
@@ -1415,10 +1459,10 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         show = this_df[["일자", act_col, "편차_GJ"]].copy()
         show.columns = ["일자", "일별실적(GJ)", "편차(실적-일계획)(GJ)"]
         show["일별실적(GJ)"] = show["일별실적(GJ)"].apply(lambda v: v / 1000.0)
-        st.dataframe(
-            show.style.format("{:,.1f}", subset=["일별실적(GJ)", "편차(실적-일계획)(GJ)"]),
-            use_container_width=True,
+        styled = center_style(
+            show.style.format("{:,.1f}", subset=["일별실적(GJ)", "편차(실적-일계획)(GJ)"])
         )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # 3) 일별 공급량 Top 랭킹 + 3차 다항식 기온-공급량 그래프
     st.markdown("---")
@@ -1441,6 +1485,21 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         rank_df = month_all.sort_values("공급량_GJ", ascending=False).head(top_n).copy()
         rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
 
+        # 상위 1~3위 카드
+        top3 = rank_df.head(3)
+        c1, c2, c3 = st.columns(3)
+        cols = [c1, c2, c3]
+        icons = ["🥇", "🥈", "🥉"]
+        grads = [
+            "linear-gradient(120deg,#eff6ff,#fef9c3)",
+            "linear-gradient(120deg,#f9fafb,#e5e7eb)",
+            "linear-gradient(120deg,#fff7ed,#fef9c3)",
+        ]
+        for i, (_, row) in enumerate(top3.iterrows()):
+            with cols[i]:
+                _render_supply_top_card(int(row["Rank"]), row, icons[i], grads[i])
+
+        # 랭킹 표 (인덱스 제거 + 가운데 정렬)
         show_rank = rank_df[
             ["Rank", "공급량_GJ", "연", "월", "일", "평균기온(℃)"]
         ].rename(
@@ -1453,33 +1512,16 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             }
         )
 
-        st.dataframe(
+        styled_rank = center_style(
             show_rank.style.format(
                 {
                     "공급량(GJ)": "{:,.1f}",
                     "평균기온(℃)": "{:,.1f}",
                 }
-            ),
-            use_container_width=True,
+            )
         )
-
-        # Top1 하이라이트 카드
-        best = rank_df.iloc[0]
-        html = f"""
-        <div style="border-radius:18px; padding:18px 22px; background:linear-gradient(90deg,#eff6ff,#fef9c3); box-shadow:0 4px 15px rgba(0,0,0,0.06); margin-top:10px;">
-          <div style="font-size:18px; font-weight:700; margin-bottom:6px;">🥇 최대 공급량 기록</div>
-          <div style="font-size:16px; margin-bottom:4px;">
-            <b>{int(best['연'])}년 {int(best['월'])}월 {int(best['일'])}일</b>
-          </div>
-          <div style="font-size:15px; margin-bottom:2px;">
-            · 공급량: <b>{best['공급량_GJ']:,.1f} GJ</b>
-          </div>
-          <div style="font-size:15px; margin-bottom:2px;">
-            · 평균기온: <b>{best['평균기온(℃)']:.1f}℃</b>
-          </div>
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.dataframe(styled_rank, use_container_width=True, hide_index=True)
 
         # 기온별 공급량 변화 (3차 다항식)
         st.markdown("#### 🌡️ 기온별 공급량 변화 (3차 다항식)")
@@ -1652,11 +1694,11 @@ def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 1
     fig.update_traces(texttemplate="%{text}일", textposition="outside")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.dataframe(
+    styled_grp = center_style(
         grp.rename(columns={"평균공급량_GJ": "평균공급량(GJ)"})
-        .style.format({"평균공급량(GJ)": "{:,.1f}"}),
-        use_container_width=True,
+        .style.format({"평균공급량(GJ)": "{:,.1f}"})
     )
+    st.dataframe(styled_grp, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────
