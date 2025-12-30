@@ -233,7 +233,6 @@ def render_section_selector(
 ) -> Tuple[int, int, str, List[int]]:
     """
     각 섹션별 기준선택 UI.
-    수정 사항: 기준 월 선택 박스를 무조건 1~12월이 나오도록 수정.
     """
     st.markdown(f"#### ✅ {title} 기준 선택")
 
@@ -262,7 +261,6 @@ def render_section_selector(
         months_for_default_year = sorted(
             long_df[long_df["연"] == default_year]["월"].unique().tolist()
         )
-    # 데이터가 아예 없으면 1월을 디폴트로
     default_month_global = months_for_default_year[-1] if months_for_default_year else 1
 
     c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
@@ -275,10 +273,10 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
-    # [수정] 월 선택 옵션은 항상 1~12월로 고정
+    # 월 선택 옵션: 1~12월 고정
     months_options = list(range(1, 13))
     
-    # 디폴트 월 선택 로직: 선택된 연도에 데이터가 있다면 가장 최신 월, 없다면 글로벌 디폴트
+    # 디폴트 월 선택 로직
     df_sel = long_df[long_df["연"] == sel_year].copy()
     months_actual: List[int] = []
     
@@ -293,10 +291,8 @@ def render_section_selector(
     if months_actual:
         default_month_for_sel_year = months_actual[-1]
     else:
-        # 해당 연도 실적이 없으면 이전 로직의 글로벌 디폴트 사용 혹은 1월
         default_month_for_sel_year = default_month_global
 
-    # 안전장치: 1~12 범위를 벗어나지 않게
     if default_month_for_sel_year < 1: default_month_for_sel_year = 1
     if default_month_for_sel_year > 12: default_month_for_sel_year = 12
 
@@ -1506,13 +1502,16 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
 
     # 3) 일별 공급량 Top 랭킹 + 3차 다항식 기온-공급량 그래프
     st.markdown("---")
-    st.markdown("### 💎 일별 공급량 Top 랭킹 (선택월 전체 연도)")
+    st.markdown("### 💎 일별 공급량 Top 랭킹")
 
     month_all = df_all[df_all["월"] == sel_month].copy()
     if month_all.empty:
         st.info("선택월에 해당하는 일별 데이터가 없어.")
     else:
         month_all["공급량_GJ"] = month_all[act_col] / 1000.0
+        
+        # 1. 선택월 기준 Top 랭킹
+        st.markdown("#### 📅 선택월 기준 Top 랭킹")
         top_n = st.slider(
             "표시할 순위 개수",
             min_value=5,
