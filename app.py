@@ -233,11 +233,7 @@ def render_section_selector(
 ) -> Tuple[int, int, str, List[int]]:
     """
     각 섹션별 기준선택 UI.
-
-    디폴트 월 로직:
-      1) '계획/실적' 컬럼이 있고 실적값(값!=0)이 있는 행만 먼저 필터
-      2) 그 안에서 선택 연도의 가장 최신 월을 기본값으로 사용
-      3) 실적이 전혀 없으면 해당 연도의 마지막 월을 기본값으로 사용
+    수정 사항: 기준 월 선택 박스를 무조건 1~12월이 나오도록 수정.
     """
     st.markdown(f"#### ✅ {title} 기준 선택")
 
@@ -266,6 +262,7 @@ def render_section_selector(
         months_for_default_year = sorted(
             long_df[long_df["연"] == default_year]["월"].unique().tolist()
         )
+    # 데이터가 아예 없으면 1월을 디폴트로
     default_month_global = months_for_default_year[-1] if months_for_default_year else 1
 
     c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
@@ -278,9 +275,13 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
-    # 선택된 연도 기준 디폴트 월 (역시 실적 우선)
+    # [수정] 월 선택 옵션은 항상 1~12월로 고정
+    months_options = list(range(1, 13))
+    
+    # 디폴트 월 선택 로직: 선택된 연도에 데이터가 있다면 가장 최신 월, 없다면 글로벌 디폴트
     df_sel = long_df[long_df["연"] == sel_year].copy()
     months_actual: List[int] = []
+    
     if {"계획/실적", "값"}.issubset(df_sel.columns):
         m = (
             (df_sel["계획/실적"] == "실적")
@@ -289,23 +290,21 @@ def render_section_selector(
         )
         months_actual = sorted(df_sel[m]["월"].unique().tolist())
 
-    months = months_actual or sorted(df_sel["월"].unique().tolist())
-    if not months:
-        months = [default_month_global]
-
     if months_actual:
         default_month_for_sel_year = months_actual[-1]
     else:
-        default_month_for_sel_year = months[-1]
+        # 해당 연도 실적이 없으면 이전 로직의 글로벌 디폴트 사용 혹은 1월
+        default_month_for_sel_year = default_month_global
 
-    if default_month_for_sel_year not in months:
-        default_month_for_sel_year = months[-1]
+    # 안전장치: 1~12 범위를 벗어나지 않게
+    if default_month_for_sel_year < 1: default_month_for_sel_year = 1
+    if default_month_for_sel_year > 12: default_month_for_sel_year = 12
 
     with c2:
         sel_month = st.selectbox(
             "기준 월",
-            options=months,
-            index=months.index(default_month_for_sel_year),
+            options=months_options,
+            index=months_options.index(default_month_for_sel_year),
             key=f"{key_prefix}month",
         )
 
@@ -1507,8 +1506,7 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
 
     # 3) 일별 공급량 Top 랭킹 + 3차 다항식 기온-공급량 그래프
     st.markdown("---")
-    st.markdown("### 💎 일별 공급량 Top10 (선택월 · 전체 연도)")
-
+    st.markdown("### 💎 일별 공급량 Top 랭킹 (선택월 전체 연도)")
 
     month_all = df_all[df_all["월"] == sel_month].copy()
     if month_all.empty:
@@ -1516,14 +1514,13 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     else:
         month_all["공급량_GJ"] = month_all[act_col] / 1000.0
         top_n = st.slider(
-    "표시할 순위 개수 (Top-N)",
-    min_value=5,
-    max_value=50,
-    value=10,   # ✅ 기본값 Top10
-    step=5,
-    key=f"{key_prefix}top_n_{sel_month}",
-)
-
+            "표시할 순위 개수",
+            min_value=5,
+            max_value=50,
+            value=20,
+            step=5,
+            key=f"{key_prefix}top_n_{sel_month}",
+        )
 
         rank_df = month_all.sort_values("공급량_GJ", ascending=False).head(top_n).copy()
         rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
@@ -1565,6 +1562,35 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         )
         st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(styled_rank, use_container_width=True, hide_index=True)
+
+        # -----------------------------------------------------------
+        # [추가 요청] 전체 기간 공급량 Top 10 (역대 최고)
+        # -----------------------------------------------------------
+        st.markdown("#### 🏆 전체 기간 공급량 Top 10 (역대 최고)")
+        global_top = df_all.sort_values(act_col, ascending=False).head(10).copy()
+        global_top.insert(0, "Rank", range(1, 11))
+        global_top["공급량(GJ)"] = global_top[act_col] / 1000.0
+
+        show_global = global_top[
+            ["Rank", "공급량(GJ)", "연", "월", "일", "평균기온(℃)"]
+        ].rename(
+            columns={
+                "연": "연도",
+                "월": "월",
+                "일": "일",
+            }
+        )
+        
+        styled_global = center_style(
+            show_global.style.format(
+                {
+                    "공급량(GJ)": "{:,.1f}",
+                    "평균기온(℃)": "{:,.1f}",
+                }
+            )
+        )
+        st.dataframe(styled_global, use_container_width=True, hide_index=True)
+        # -----------------------------------------------------------
 
         # 기온별 공급량 변화 (3차 다항식)
         st.markdown("#### 🌡️ 기온별 공급량 변화 (3차 다항식)")
