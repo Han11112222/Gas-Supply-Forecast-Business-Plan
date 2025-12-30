@@ -1507,7 +1507,8 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
 
     # 3) 일별 공급량 Top 랭킹 + 3차 다항식 기온-공급량 그래프
     st.markdown("---")
-    st.markdown("### 💎 일별 공급량 Top 랭킹 (선택월 전체 연도)")
+    st.markdown("### 💎 일별 공급량 Top10 (선택월 · 전체 연도)")
+
 
     month_all = df_all[df_all["월"] == sel_month].copy()
     if month_all.empty:
@@ -1515,13 +1516,14 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     else:
         month_all["공급량_GJ"] = month_all[act_col] / 1000.0
         top_n = st.slider(
-            "표시할 순위 개수",
-            min_value=5,
-            max_value=50,
-            value=20,
-            step=5,
-            key=f"{key_prefix}top_n_{sel_month}",
-        )
+    "표시할 순위 개수 (Top-N)",
+    min_value=5,
+    max_value=50,
+    value=10,   # ✅ 기본값 Top10
+    step=5,
+    key=f"{key_prefix}top_n_{sel_month}",
+)
+
 
         rank_df = month_all.sort_values("공급량_GJ", ascending=False).head(top_n).copy()
         rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
