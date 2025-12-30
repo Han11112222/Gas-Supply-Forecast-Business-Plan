@@ -1508,23 +1508,25 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     if month_all.empty:
         st.info("선택월에 해당하는 일별 데이터가 없어.")
     else:
-        month_all["공급량_GJ"] = month_all[act_col] / 1000.0
-        
-        # 1. 선택월 기준 Top 랭킹
-        st.markdown("#### 📅 선택월 기준 Top 랭킹")
+        # 공통 슬라이더
         top_n = st.slider(
-            "표시할 순위 개수",
+            "표시할 순위 개수 (선택월 & 전체기간)",
             min_value=5,
             max_value=50,
-            value=20,
+            value=10,
             step=5,
             key=f"{key_prefix}top_n_{sel_month}",
         )
 
+        # -----------------------------------------------------------
+        # [기존] 선택월 기준 Top 랭킹
+        # -----------------------------------------------------------
+        st.markdown("#### 📅 선택월 기준 Top 랭킹")
+        month_all["공급량_GJ"] = month_all[act_col] / 1000.0
         rank_df = month_all.sort_values("공급량_GJ", ascending=False).head(top_n).copy()
         rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
 
-        # 상위 1~3위 카드
+        # 상위 1~3위 카드 (월별)
         top3 = rank_df.head(3)
         c1, c2, c3 = st.columns(3)
         cols = [c1, c2, c3]
@@ -1538,7 +1540,7 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             with cols[i]:
                 _render_supply_top_card(int(row["Rank"]), row, icons[i], grads[i])
 
-        # 랭킹 표
+        # 랭킹 표 (월별)
         show_rank = rank_df[
             ["Rank", "공급량_GJ", "연", "월", "일", "평균기온(℃)"]
         ].rename(
@@ -1550,44 +1552,51 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
                 "평균기온(℃)": "평균기온(℃)",
             }
         )
-
         styled_rank = center_style(
             show_rank.style.format(
-                {
-                    "공급량(GJ)": "{:,.1f}",
-                    "평균기온(℃)": "{:,.1f}",
-                }
+                {"공급량(GJ)": "{:,.1f}", "평균기온(℃)": "{:,.1f}"}
             )
         )
         st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(styled_rank, use_container_width=True, hide_index=True)
 
         # -----------------------------------------------------------
-        # [추가 요청] 전체 기간 공급량 Top 10 (역대 최고)
+        # [신규] 전체 기간 공급량 Top 랭킹 (역대 최고)
         # -----------------------------------------------------------
-        st.markdown("#### 🏆 전체 기간 공급량 Top 10 (역대 최고)")
-        global_top = df_all.sort_values(act_col, ascending=False).head(10).copy()
-        global_top.insert(0, "Rank", range(1, 11))
-        global_top["공급량(GJ)"] = global_top[act_col] / 1000.0
+        st.markdown("---")
+        st.markdown("#### 🏆 전체 기간 공급량 Top 랭킹 (역대 최고)")
+        
+        # 슬라이더 값(top_n) 적용하여 데이터 추출
+        global_top = df_all.sort_values(act_col, ascending=False).head(top_n).copy()
+        global_top["공급량_GJ"] = global_top[act_col] / 1000.0  # 카드 렌더링용 컬럼 생성
+        global_top.insert(0, "Rank", range(1, len(global_top) + 1))
 
+        # 상위 1~3위 카드 (전체)
+        g_top3 = global_top.head(3)
+        gc1, gc2, gc3 = st.columns(3)
+        gcols = [gc1, gc2, gc3]
+        for i, (_, row) in enumerate(g_top3.iterrows()):
+            with gcols[i]:
+                _render_supply_top_card(int(row["Rank"]), row, icons[i], grads[i])
+
+        # 랭킹 표 (전체)
         show_global = global_top[
-            ["Rank", "공급량(GJ)", "연", "월", "일", "평균기온(℃)"]
+            ["Rank", "공급량_GJ", "연", "월", "일", "평균기온(℃)"]
         ].rename(
             columns={
+                "공급량_GJ": "공급량(GJ)",
                 "연": "연도",
                 "월": "월",
                 "일": "일",
+                "평균기온(℃)": "평균기온(℃)",
             }
         )
-        
         styled_global = center_style(
             show_global.style.format(
-                {
-                    "공급량(GJ)": "{:,.1f}",
-                    "평균기온(℃)": "{:,.1f}",
-                }
+                {"공급량(GJ)": "{:,.1f}", "평균기온(℃)": "{:,.1f}"}
             )
         )
+        st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(styled_global, use_container_width=True, hide_index=True)
         # -----------------------------------------------------------
 
