@@ -273,7 +273,7 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
-    # 월 선택 옵션: 1~12월 고정
+    # [수정] 월 선택 옵션: 1~12월 고정
     months_options = list(range(1, 13))
     
     # 디폴트 월 선택 로직
@@ -1746,8 +1746,11 @@ def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 1
         st.info("선택 범위에 공급량/기온 데이터가 없어.")
         return
 
-    bins = [-100, 0, 5, 10, 15, 20, 25, 30, 100]
-    labels = ["<0℃", "0~5℃", "5~10℃", "10~15℃", "15~20℃", "20~25℃", "25~30℃", "≥30℃"]
+    bins = [-100, -10, -5, 0, 5, 10, 15, 20, 25, 30, 100]
+    labels = [
+        "<-10℃", "-10~-5℃", "-5~0℃",
+        "0~5℃", "5~10℃", "10~15℃", "15~20℃", "20~25℃", "25~30℃", "≥30℃"
+    ]
     sub["기온구간"] = pd.cut(sub["평균기온(℃)"], bins=bins, labels=labels, right=False)
 
     grp = sub.groupby("기온구간", as_index=False).agg(
