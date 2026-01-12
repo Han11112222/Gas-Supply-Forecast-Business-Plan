@@ -273,7 +273,7 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
-    # [수정] 월 선택 옵션: 1~12월 고정
+    # 월 선택 옵션: 1~12월 고정
     months_options = list(range(1, 13))
     
     # 디폴트 월 선택 로직
@@ -586,7 +586,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 1. (판매량) 월별 추이 (★ '연 누적' 고정) -- [수정됨]
+# 1. (판매량) 월별 추이 (★ '연 누적' 고정)
 # ─────────────────────────────────────────────────────────
 def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📈 월별 추이 그래프")
@@ -687,7 +687,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
     # 1. 합계 계산
     total_row = table.sum(numeric_only=True)
     
-    # 2. 인덱스(월)를 숫자가 아닌 문자가 들어갈 수 있도록 Object 타입으로 변환 (안전장치)
+    # 2. 인덱스(월)를 숫자가 아닌 문자가 들어갈 수 있도록 Object 타입으로 변환
     table.index = table.index.astype(object)
     
     # 3. 소계 행 추가
@@ -697,7 +697,6 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
     table = table.reset_index()
     
     # 5. 숫자 포맷팅 적용 대상 컬럼만 지정 (가장 왼쪽 '월' 컬럼 제외)
-    #    이렇게 해야 "소계"라는 글자를 숫자로 바꾸려다 나는 에러를 막을 수 있어.
     numeric_cols = [c for c in table.columns if c != "월"]
     
     # 6. 스타일 적용 (특정 컬럼만 포맷팅)
@@ -1891,9 +1890,11 @@ if main_tab == "판매량 분석":
                     prefix = "sales_vol_"
                 else:
                     # MJ → GJ 변환(표시용)
+                    # [수정] 4,900(TJ) -> 4,900,000(GJ)로 변경 요청에 따라 
+                    # 기존의 '/ 1000.0' 연산을 제거하여 1,000배 큰 숫자가 표시되도록 수정함
                     df_long = long_dict.get("열량", pd.DataFrame()).copy()
-                    if not df_long.empty:
-                        df_long["값"] = df_long["값"] / 1000.0
+                    # if not df_long.empty:
+                    #     df_long["값"] = df_long["값"] / 1000.0  <-- 이 부분을 삭제했습니다.
                     unit = "GJ"
                     prefix = "sales_gj_"
 
