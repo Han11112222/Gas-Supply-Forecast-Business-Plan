@@ -681,9 +681,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .fillna(0.0)
     )
     
-    # ─────────────────────────────────────────────────────────
     # [수정] 소계 행 추가 및 포맷팅 에러 방지 로직
-    # ─────────────────────────────────────────────────────────
     # 1. 합계 계산
     total_row = table.sum(numeric_only=True)
     
@@ -944,6 +942,43 @@ def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_pre
         yaxis2=dict(title="증감(실적-계획)", overlaying="y", side="right", showgrid=False),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ─────────────────────────────────────────────────────────
+    # [추가] 월별 상세 수치표 (계획/실적/차이/달성률 + 소계)
+    # ─────────────────────────────────────────────────────────
+    st.markdown("##### 🔢 월별 상세 수치표")
+
+    # 1. Pivot 구조 만들기
+    table = bars.pivot(index="월", columns="계획/실적", values="값").fillna(0.0)
+
+    # 2. 필수 컬럼 확보
+    if "계획" not in table.columns: table["계획"] = 0.0
+    if "실적" not in table.columns: table["실적"] = 0.0
+
+    # 3. 차이/달성률 계산
+    table["차이"] = table["실적"] - table["계획"]
+    table["달성률(%)"] = np.where(table["계획"]!=0, (table["실적"]/table["계획"])*100.0, 0.0)
+    
+    # 4. 소계(Total) 계산
+    total_plan = table["계획"].sum()
+    total_act = table["실적"].sum()
+    total_diff = total_act - total_plan
+    total_rate = (total_act / total_plan * 100.0) if total_plan != 0 else 0.0
+    
+    # 인덱스 타입 변경 (문자열 '소계' 입력을 위해)
+    table.index = table.index.astype(object)
+    table.loc["소계"] = [total_plan, total_act, total_diff, total_rate]
+    
+    # 5. 테이블 정리 및 포맷팅
+    table = table.reset_index().rename(columns={"index": "월"})
+    
+    numeric_cols = ["계획", "실적", "차이"]
+    
+    format_dict = {c: "{:,.0f}" for c in numeric_cols}
+    format_dict["달성률(%)"] = "{:,.1f}"
+    
+    styled = center_style(table.style.format(format_dict))
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────
@@ -1667,140 +1702,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
 
     # 5) 기온 구간별 평균 공급량 분석
     temperature_supply_band_section(day_df, default_month=sel_month, key_prefix="tempBandD_")
-
-
-def temperature_matrix(day_df: pd.DataFrame, default_month: int = 10, key_prefix: str = "temp_"):
-    """기온 매트릭스 (일별 평균기온)"""
-    st.markdown("### 🌡️ 기온 매트릭스 (일별 평균기온)")
-
-    if day_df.empty or "평균기온(℃)" not in day_df.columns:
-        st.info("기온 데이터가 없어.")
-        return
-
-    day_df = day_df.copy()
-    day_df["연"] = day_df["일자"].dt.year
-    day_df["월"] = day_df["일자"].dt.month
-    day_df["일"] = day_df["일자"].dt.day
-
-    years = sorted(day_df["연"].unique().tolist())
-    min_y, max_y = years[0], years[-1]
-
-    c1, c2 = st.columns([2, 1.2])
-    with c1:
-        yr_range = st.slider(
-            "연도 범위",
-            min_value=min_y, max_value=max_y,
-            value=(min_y, max_y),
-            step=1,
-            key=f"{key_prefix}yr_range"
-        )
-    with c2:
-        sel_m = st.selectbox(
-            "월 선택",
-            options=list(range(1, 13)),
-            index=default_month - 1,
-            key=f"{key_prefix}month"
-        )
-
-    sub = day_df[(day_df["연"].between(yr_range[0], yr_range[1])) & (day_df["월"] == sel_m)]
-    if sub.empty:
-        st.info("선택 범위에 데이터가 없어.")
-        return
-
-    pivot = sub.pivot_table(index="일", columns="연", values="평균기온(℃)", aggfunc="mean")
-    pivot = pivot.reindex(range(1, 32))  # 1~31일 고정
-    avg_row = pivot.mean(axis=0).to_frame().T
-    avg_row.index = ["평균"]
-    pivot2 = pd.concat([pivot, avg_row], axis=0)
-
-    fig = px.imshow(
-        pivot2,
-        aspect="auto",
-        labels=dict(x="연도", y="일", color="°C"),
-        color_continuous_scale="RdBu_r",
-    )
-    fig.update_layout(
-        height=520,
-        margin=dict(l=10, r=10, t=30, b=10),
-        coloraxis_colorbar=dict(title="°C")
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.caption(f"{sel_m}월 기준 · 선택연도 {yr_range[0]}~{yr_range[1]}")
-
-
-def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 10, key_prefix: str = "tempBand_"):
-    """기온 구간별 평균 공급량 분석 (기온 매트릭스와 연계)"""
-    st.markdown("### 🔥 기온 구간별 평균 공급량 분석")
-
-    act_col = "공급량(MJ)"
-    if day_df.empty or "평균기온(℃)" not in day_df.columns or act_col not in day_df.columns:
-        st.info("기온 또는 공급량 데이터가 없어.")
-        return
-
-    df = day_df.copy()
-    df["연"] = df["일자"].dt.year
-    df["월"] = df["일자"].dt.month
-
-    years = sorted(df["연"].unique().tolist())
-    min_y, max_y = years[0], years[-1]
-
-    c1, c2 = st.columns([2, 1.2])
-    with c1:
-        yr_range = st.slider(
-            "연도 범위(공급량 분석)",
-            min_value=min_y, max_value=max_y,
-            value=(max(min_y, max_y - 4), max_y),  # 최근 5년 기본
-            step=1,
-            key=f"{key_prefix}yr_range"
-        )
-    with c2:
-        sel_m = st.selectbox(
-            "월 선택(공급량 분석)",
-            options=list(range(1, 13)),
-            index=default_month - 1,
-            key=f"{key_prefix}month"
-        )
-
-    sub = df[(df["연"].between(yr_range[0], yr_range[1])) & (df["월"] == sel_m)].copy()
-    sub = sub.dropna(subset=["평균기온(℃)", act_col])
-    if sub.empty:
-        st.info("선택 범위에 공급량/기온 데이터가 없어.")
-        return
-
-    bins = [-100, -10, -5, 0, 5, 10, 15, 20, 25, 30, 100]
-    labels = [
-        "<-10℃", "-10~-5℃", "-5~0℃",
-        "0~5℃", "5~10℃", "10~15℃", "15~20℃", "20~25℃", "25~30℃", "≥30℃"
-    ]
-    sub["기온구간"] = pd.cut(sub["평균기온(℃)"], bins=bins, labels=labels, right=False)
-
-    grp = sub.groupby("기온구간", as_index=False).agg(
-        평균공급량_GJ=(act_col, lambda x: x.mean() / 1000.0),
-        일수=(act_col, "count"),
-    )
-
-    grp = grp.dropna(subset=["기온구간"])
-
-    fig = px.bar(
-        grp,
-        x="기온구간",
-        y="평균공급량_GJ",
-        text="일수",
-    )
-    fig.update_layout(
-        xaxis_title="기온 구간",
-        yaxis_title="평균 공급량 (GJ)",
-        margin=dict(l=10, r=10, t=40, b=10),
-    )
-    fig.update_traces(texttemplate="%{text}일", textposition="outside")
-    st.plotly_chart(fig, use_container_width=True)
-
-    styled_grp = center_style(
-        grp.rename(columns={"평균공급량_GJ": "평균공급량(GJ)"})
-        .style.format({"평균공급량(GJ)": "{:,.1f}"})
-    )
-    st.dataframe(styled_grp, use_container_width=True, hide_index=True)
 
 
 # ─────────────────────────────────────────────────────────
