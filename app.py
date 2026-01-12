@@ -681,18 +681,25 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .fillna(0.0)
     )
     
-    # [Han형님 요청] 누계 행 추가
-    total_row = table.sum(axis=0)
-    total_row.name = "누계"
-    table = pd.concat([table, total_row.to_frame().T])
-
-    table = table.reset_index()
-
-    # [중요 수정] "월" 컬럼(누계 글자 포함)은 숫자 포맷팅 제외!
-    cols_to_format = [c for c in table.columns if c != "월"]
-    format_dict = {c: "{:,.0f}" for c in cols_to_format}
+    # [수정] 누계 행 추가 로직
+    # 1. 수치형 데이터만 합계 계산
+    sum_row = table.sum(axis=0)
+    sum_row.name = "누계"
     
+    # 2. 합계 행을 데이터프레임으로 변환 후 원본에 붙이기
+    table = pd.concat([table, sum_row.to_frame().T])
+    
+    # 3. 인덱스 리셋 (월 컬럼 생성)
+    table = table.reset_index()
+    
+    # [수정] 포맷팅 에러 방지 로직
+    # '월' 컬럼은 문자열('누계')이 섞여 있으므로 숫자 포맷팅에서 제외
+    numeric_cols = [c for c in table.columns if c != "월"]
+    format_dict = {c: "{:,.0f}" for c in numeric_cols}
+    
+    # 4. 스타일 적용
     styled = center_style(table.style.format(format_dict))
+    
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
