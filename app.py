@@ -468,7 +468,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 특이사항 (무조건 2건)
+    #── 특이사항 (무조건 2건)
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -586,7 +586,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 1. (판매량) 월별 추이 (★ '연 누적' 고정)
+# 1. (판매량) 월별 추이 (★ '연 누적' 고정) -- [수정됨]
 # ─────────────────────────────────────────────────────────
 def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 📈 월별 추이 그래프")
@@ -680,8 +680,31 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .sort_index()
         .fillna(0.0)
     )
+    
+    # ─────────────────────────────────────────────────────────
+    # [수정] 소계 행 추가 및 포맷팅 에러 방지 로직
+    # ─────────────────────────────────────────────────────────
+    # 1. 합계 계산
+    total_row = table.sum(numeric_only=True)
+    
+    # 2. 인덱스(월)를 숫자가 아닌 문자가 들어갈 수 있도록 Object 타입으로 변환 (안전장치)
+    table.index = table.index.astype(object)
+    
+    # 3. 소계 행 추가
+    table.loc["소계"] = total_row
+    
+    # 4. 인덱스를 컬럼으로 뺌 ('월' 컬럼 생성)
     table = table.reset_index()
-    styled = center_style(table.style.format("{:,.0f}"))
+    
+    # 5. 숫자 포맷팅 적용 대상 컬럼만 지정 (가장 왼쪽 '월' 컬럼 제외)
+    #    이렇게 해야 "소계"라는 글자를 숫자로 바꾸려다 나는 에러를 막을 수 있어.
+    numeric_cols = [c for c in table.columns if c != "월"]
+    
+    # 6. 스타일 적용 (특정 컬럼만 포맷팅)
+    styled = center_style(
+        table.style.format({col: "{:,.0f}" for col in numeric_cols})
+    )
+    
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
@@ -793,7 +816,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 3. (판매량) 계획대비 월별 실적 (★ '연 누적' 고정)
+# 3. (판매량) 계획대비 월별 실적 (★ '연 누적'고정)
 # ─────────────────────────────────────────────────────────
 def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧮 계획대비 월별 실적 (용도 선택)")
@@ -1270,7 +1293,7 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
                                          sel_year: int, sel_month: int,
                                          plan_choice: str, plan_label: str,
                                          key_prefix: str = ""):
-    """공급량(월) 탭용: 일일계획량 vs 일별실적"""
+    """공급량(월)탭용: 일일계획량 vs 일별실적"""
     st.markdown("### ❄️ 일일계획량 대비 일별실적 (선택월)")
 
     if day_df.empty or month_df.empty:
@@ -1370,7 +1393,7 @@ def _render_supply_top_card(rank: int, row: pd.Series, icon: str, gradient: str)
 def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
                      sel_year: int, sel_month: int, plan_choice: str, plan_label: str,
                      key_prefix: str = ""):
-    """공급량(일) 탭: 패턴 비교 + 편차 + Top 랭킹 + 기온 매트릭스/기온구간 분석"""
+    """공급량(일)탭: 패턴 비교 + 편차 + Top 랭킹 + 기온 매트릭스/기온구간 분석"""
     st.markdown("## 📅 공급량 분석(일)")
 
     if day_df.empty or month_df.empty:
