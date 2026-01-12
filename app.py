@@ -687,7 +687,13 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
     table = pd.concat([table, total_row.to_frame().T])
 
     table = table.reset_index()
-    styled = center_style(table.style.format("{:,.0f}"))
+
+    # [수정] "누계"라는 글자가 숫자 포맷팅 함수에 들어가서 생긴 오류 해결
+    # "월" 컬럼을 제외한 나머지 컬럼(데이터 컬럼)에만 숫자 포맷 적용
+    cols_to_format = [c for c in table.columns if c != "월"]
+    format_dict = {c: "{:,.0f}" for c in cols_to_format}
+    
+    styled = center_style(table.style.format(format_dict))
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
