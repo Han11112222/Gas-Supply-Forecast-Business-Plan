@@ -680,6 +680,12 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .sort_index()
         .fillna(0.0)
     )
+    
+    # [Han형님 요청] 누계 행 추가
+    total_row = table.sum(axis=0)
+    total_row.name = "누계"
+    table = pd.concat([table, total_row.to_frame().T])
+
     table = table.reset_index()
     styled = center_style(table.style.format("{:,.0f}"))
     st.dataframe(styled, use_container_width=True, hide_index=True)
