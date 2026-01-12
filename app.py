@@ -468,7 +468,7 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── 특이사항 (무조건 2건)
+    #── 특이사항 (무조건 2건)
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -680,6 +680,14 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .sort_index()
         .fillna(0.0)
     )
+    
+    # ─────────────────────────────────────────────────────────
+    # [추가] 소계 행 추가 로직
+    # ─────────────────────────────────────────────────────────
+    total_row = table.sum(numeric_only=True)
+    table.loc["소계"] = total_row
+    # ─────────────────────────────────────────────────────────
+
     table = table.reset_index()
     styled = center_style(table.style.format("{:,.0f}"))
     st.dataframe(styled, use_container_width=True, hide_index=True)
@@ -793,7 +801,7 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
 
 # ─────────────────────────────────────────────────────────
-# 3. (판매량) 계획대비 월별 실적 (★ '연 누적' 고정)
+# 3. (판매량) 계획대비 월별 실적 (★ '연 누적'고정)
 # ─────────────────────────────────────────────────────────
 def plan_vs_actual_usage_section(long_df: pd.DataFrame, unit_label: str, key_prefix: str = ""):
     st.markdown("### 🧮 계획대비 월별 실적 (용도 선택)")
@@ -1270,7 +1278,7 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
                                          sel_year: int, sel_month: int,
                                          plan_choice: str, plan_label: str,
                                          key_prefix: str = ""):
-    """공급량(월) 탭용: 일일계획량 vs 일별실적"""
+    """공급량(월)탭용: 일일계획량 vs 일별실적"""
     st.markdown("### ❄️ 일일계획량 대비 일별실적 (선택월)")
 
     if day_df.empty or month_df.empty:
@@ -1370,7 +1378,7 @@ def _render_supply_top_card(rank: int, row: pd.Series, icon: str, gradient: str)
 def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
                      sel_year: int, sel_month: int, plan_choice: str, plan_label: str,
                      key_prefix: str = ""):
-    """공급량(일) 탭: 패턴 비교 + 편차 + Top 랭킹 + 기온 매트릭스/기온구간 분석"""
+    """공급량(일)탭: 패턴 비교 + 편차 + Top 랭킹 + 기온 매트릭스/기온구간 분석"""
     st.markdown("## 📅 공급량 분석(일)")
 
     if day_df.empty or month_df.empty:
