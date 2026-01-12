@@ -688,8 +688,7 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
 
     table = table.reset_index()
 
-    # [수정] "누계"라는 글자가 숫자 포맷팅 함수에 들어가서 생긴 오류 해결
-    # "월" 컬럼을 제외한 나머지 컬럼(데이터 컬럼)에만 숫자 포맷 적용
+    # [중요 수정] "월" 컬럼(누계 글자 포함)은 숫자 포맷팅 제외!
     cols_to_format = [c for c in table.columns if c != "월"]
     format_dict = {c: "{:,.0f}" for c in cols_to_format}
     
