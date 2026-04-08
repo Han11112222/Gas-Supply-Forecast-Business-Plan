@@ -1010,13 +1010,17 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     grp = base.groupby(["연", "그룹"], as_index=False)["값"].sum()
 
     # ─────────────────────────────────────────────────────────
-    # [수정] 연도별 총합을 구하고 각 그룹별 비중(%)을 계산
+    # [수정] 연도별 총합을 구하고 각 그룹별 비중(%)을 계산 및 텍스트 표시 보완
     # ─────────────────────────────────────────────────────────
     total_per_year = grp.groupby("연")["값"].transform("sum")
     grp["비중(%)"] = (grp["값"] / total_per_year) * 100
     
     # 막대가 너무 작을 때 글자가 겹치는 것을 방지 (1.5% 이상일 때만 표시)
-    grp["비중텍스트"] = grp["비중(%)"].apply(lambda x: f"{x:.1f}%" if x >= 1.5 else "")
+    # 요청하신 대로 (실적 판매량, 구성비) 형태로 표시합니다.
+    grp["비중텍스트"] = grp.apply(
+        lambda r: f"({r['값']:,.0f}, {r['비중(%)']:.1f}%)" if r["비중(%)"] >= 1.5 else "", 
+        axis=1
+    )
 
     # px.bar 에 비중텍스트 및 hover_data 매핑 추가
     fig = px.bar(
