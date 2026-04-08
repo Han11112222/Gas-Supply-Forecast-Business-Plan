@@ -1033,11 +1033,13 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         hover_data={"값": ":,.0f", "비중(%)": ":.1f", "비중텍스트": False}
     )
     
-    # 텍스트가 막대 중앙에 위치하도록 조정
+    # [수정] 텍스트가 막대 중앙에 위치하도록 조정하고, 무조건 가로(textangle=0) 및 동일한 폰트 크기(size=11)로 고정합니다.
     fig.update_traces(
         width=0.4, 
         textposition="inside", 
         insidetextanchor="middle",
+        textangle=0,            # 텍스트 가로 고정 추가
+        textfont=dict(size=11), # 텍스트 크기 동일하게 고정 추가
         selector=dict(type="bar")
     )
 
@@ -1053,12 +1055,11 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     )
 
     if not home.empty:
+        # [수정] 가정용 상단의 중복 텍스트(떨어져 나온 숫자)를 제거하기 위해 mode에서 '+text'를 빼고 텍스트 관련 설정을 삭제했습니다.
         fig.add_scatter(
             x=home["연"], y=home["가정용"],
-            mode="lines+markers+text", name="가정용",
+            mode="lines+markers", name="가정용",
             line=dict(dash="dot"),
-            text=home["가정용"].apply(lambda v: f"{v:,.0f}"),
-            textposition="top center", textfont=dict(size=11),
         )
 
     mode_tag = "당월" if agg_mode == "당월" else f"1~{sel_month}월 연 누적"
