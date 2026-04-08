@@ -191,7 +191,8 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 def pick_default_year(years: List[int]) -> int:
-    return 2025 if 2025 in years else years[-1]
+    # 안전장치로만 사용되도록 수정 (실제 핵심 디폴트 연도 로직은 render_section_selector 내부에 구현)
+    return years[-1] if years else 2025
 
 
 def apply_period_filter(
@@ -241,7 +242,6 @@ def render_section_selector(
         return 0, 1, "연 누적", []
 
     years_all = sorted(long_df["연"].unique().tolist())
-    default_year = pick_default_year(years_all)
 
     # 기본값 계산용 데이터프레임 (실적 우선)
     df_for_default = long_df.copy()
@@ -253,6 +253,12 @@ def render_section_selector(
         )
         if mask.any():
             df_for_default = df_for_default[mask]
+
+    # [수정] 최신 실적 데이터가 있는 연도를 디폴트 연도로 지정
+    if not df_for_default.empty:
+        default_year = int(df_for_default["연"].max())
+    else:
+        default_year = years_all[-1] if years_all else 2025
 
     months_for_default_year = sorted(
         df_for_default[df_for_default["연"] == default_year]["월"].unique().tolist()
@@ -269,7 +275,7 @@ def render_section_selector(
         sel_year = st.selectbox(
             "기준 연도",
             options=years_all,
-            index=years_all.index(default_year),
+            index=years_all.index(default_year) if default_year in years_all else 0,
             key=f"{key_prefix}year",
         )
 
@@ -1003,8 +1009,33 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
     grp = base.groupby(["연", "그룹"], as_index=False)["값"].sum()
 
-    fig = px.bar(grp, x="연", y="값", color="그룹", barmode="stack")
-    fig.update_traces(width=0.4, selector=dict(type="bar"))
+    # ─────────────────────────────────────────────────────────
+    # [수정] 연도별 총합을 구하고 각 그룹별 비중(%)을 계산
+    # ─────────────────────────────────────────────────────────
+    total_per_year = grp.groupby("연")["값"].transform("sum")
+    grp["비중(%)"] = (grp["값"] / total_per_year) * 100
+    
+    # 막대가 너무 작을 때 글자가 겹치는 것을 방지 (1.5% 이상일 때만 표시)
+    grp["비중텍스트"] = grp["비중(%)"].apply(lambda x: f"{x:.1f}%" if x >= 1.5 else "")
+
+    # px.bar 에 비중텍스트 및 hover_data 매핑 추가
+    fig = px.bar(
+        grp, 
+        x="연", 
+        y="값", 
+        color="그룹", 
+        barmode="stack",
+        text="비중텍스트",
+        hover_data={"값": ":,.0f", "비중(%)": ":.1f", "비중텍스트": False}
+    )
+    
+    # 텍스트가 막대 중앙에 위치하도록 조정
+    fig.update_traces(
+        width=0.4, 
+        textposition="inside", 
+        insidetextanchor="middle",
+        selector=dict(type="bar")
+    )
 
     total = grp.groupby("연", as_index=False)["값"].sum().rename(columns={"값": "합계"})
     home = grp[grp["그룹"] == "가정용"].groupby("연", as_index=False)["값"].sum().rename(columns={"값": "가정용"})
