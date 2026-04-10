@@ -365,7 +365,7 @@ def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: s
     st.markdown(html, unsafe_allow_html=True)
 
 
-def render_rate_donut(rate: float, color: str):
+def render_rate_donut(rate: float, color: str, title: str = ""):
     if pd.isna(rate) or np.isnan(rate):
         st.markdown("<div style='font-size:14px;color:#999;text-align:center;'>데이터 없음</div>",
                     unsafe_allow_html=True)
@@ -387,14 +387,15 @@ def render_rate_donut(rate: float, color: str):
 
     fig.update_layout(
         showlegend=False,
-        width=240,
-        height=240,
-        margin=dict(l=0, r=0, t=0, b=0),
+        width=200,
+        height=200,
+        margin=dict(l=0, r=0, t=20, b=0),
+        title=dict(text=title, font=dict(size=14, color="#666"), x=0.5, xanchor='center'),
         annotations=[dict(
             text=f"{rate:.1f}%",
             x=0.5, y=0.5,
             showarrow=False,
-            font=dict(size=20, color=color, family="NanumGothic"),
+            font=dict(size=22, color=color, family="NanumGothic"),
         )],
     )
     st.plotly_chart(fig, use_container_width=False)
@@ -1170,11 +1171,11 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
 
     d1, d2, d3, d4, d5 = st.columns([1, 2, 1, 2, 1])
     with d2:
-        render_rate_donut(plan_rate, "#16a34a")
-        st.caption(f"계획 달성률 · {mode_tag} ({plan_label})")
+        render_rate_donut(plan_rate, "#16a34a", "계획 달성률")
+        st.caption(f"({plan_label} · {mode_tag})")
     with d4:
-        render_rate_donut(prev_rate, "#f97316")
-        st.caption(f"전년대비 증감률 · {mode_tag}")
+        render_rate_donut(prev_rate, "#f97316", "전년대비 증감률")
+        st.caption(f"({mode_tag})")
 
     st.markdown("<br>", unsafe_allow_html=True)
     return sel_year, sel_month, agg_mode, plan_choice, plan_label
@@ -2025,10 +2026,7 @@ elif main_tab == "분기별 판매량 보고서":
     if 'excel_bytes' in locals() and excel_bytes is not None:
         sheets_rpt = load_all_sheets(excel_bytes)
         long_dict_rpt = build_long_dict(sheets_rpt)
-    
-    # 기본 열량(GJ) 데이터 사용
-    df_long_rpt = long_dict_rpt.get("열량", pd.DataFrame()) 
-
+        
     df_csv = pd.DataFrame()
     if 'csv_bytes' in locals() and csv_bytes is not None:
         try:
@@ -2041,254 +2039,270 @@ elif main_tab == "분기별 판매량 보고서":
             df_csv["사용량(mj)"] = df_csv["사용량(mj)"].astype(str).str.replace(",", "").astype(float)
         if "사용량(m3)" in df_csv.columns:
             df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
-
-    # --- 1. 보고서 기준 일자 (연도, 분기 자동 세팅) ---
-    st.markdown("#### 📅 보고서 기준 일자") # 넘버링 '1' 삭제 요청 반영
+            
+    # 단위 선택 탭 생성
+    rpt_tabs = st.tabs(["부피 기준 (천m³)", "열량 기준 (GJ)"])
     
-    # 최신 데이터 역산을 통한 Default 값 지정 로직
-    years_available = [2024, 2025, 2026]
-    default_y_index = len(years_available) - 1
-    default_q_index = 3 # 기본은 4Q
-    
-    if not df_long_rpt.empty:
-        years_available = sorted(df_long_rpt["연"].unique().tolist())
-        actual_data = df_long_rpt[df_long_rpt["계획/실적"] == "실적"]
-        if not actual_data.empty:
-            max_year = actual_data["연"].max()
-            max_month = actual_data[actual_data["연"] == max_year]["월"].max()
-            default_y_index = years_available.index(max_year) if max_year in years_available else len(years_available) - 1
-            default_q_index = int((max_month - 1) // 3) # 1~3월(0), 4~6월(1), 7~9월(2), 10~12월(3)
-            
-    # CSV 날짜 파싱 (고객상세 차트용 안전장치)
-    if not df_csv.empty:
-        if "검침적용일자" in df_csv.columns:
-            df_csv["날짜_파싱"] = pd.to_datetime(df_csv["검침적용일자"], errors="coerce")
-        elif "매출년월" in df_csv.columns:
-            df_csv["날짜_파싱"] = pd.to_datetime(df_csv["매출년월"], format="%b-%y", errors="coerce")
-        else:
-            df_csv["날짜_파싱"] = pd.to_datetime(f"{years_available[default_y_index]}-01-01")
+    for idx, rpt_tab in enumerate(rpt_tabs):
+        with rpt_tab:
+            # 탭에 따라 데이터프레임과 단위 분기 처리
+            if idx == 0:
+                df_long_rpt = long_dict_rpt.get("부피", pd.DataFrame())
+                unit_str = "천m³"
+                val_col = "사용량(m3)"
+                key_sfx = "_vol"
+            else:
+                df_long_rpt = long_dict_rpt.get("열량", pd.DataFrame())
+                unit_str = "GJ"
+                val_col = "사용량(mj)"
+                key_sfx = "_gj"
 
-        df_csv["연_csv"] = df_csv["날짜_파싱"].dt.year.fillna(years_available[default_y_index])
-        df_csv["월_csv"] = df_csv["날짜_파싱"].dt.month.fillna(1)
-    
-    c_y, c_q, c_empty = st.columns([1, 1, 2])
-    with c_y:
-        sel_year_rpt = st.selectbox("기준 연도", years_available, index=default_y_index)
-    with c_q:
-        sel_quarter = st.selectbox("기준 분기", ["1Q (1~3월)", "2Q (1~6월 누적)", "3Q (1~9월 누적)", "4Q (1~12월 누적)"], index=default_q_index)
-    
-    max_month = int(sel_quarter[0]) * 3 
-    
-    st.markdown("<hr style='margin: 10px 0 30px 0;'>", unsafe_allow_html=True)
-
-    # --- 2. At a Glance (대시보드 형태) ---
-    st.markdown("#### 💡 1. At a Glance")
-    
-    if not df_long_rpt.empty:
-        df_base = df_long_rpt[(df_long_rpt["연"].isin([sel_year_rpt, sel_year_rpt-1])) & (df_long_rpt["월"] <= max_month)]
-        
-        total_curr_plan = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "계획")]["값"].sum()
-        total_curr_act = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "실적")]["값"].sum()
-        total_prev_act = df_base[(df_base["연"] == sel_year_rpt-1) & (df_base["계획/실적"] == "실적")]["값"].sum()
-        
-        achieve_rate = (total_curr_act / total_curr_plan * 100) if total_curr_plan else 0
-        
-        col_m1, col_m2, col_m3, col_d = st.columns([1, 1, 1, 1.2])
-        with col_m1:
-            render_metric_card("🎯", f"{sel_year_rpt}년 계획", f"{fmt_num_safe(total_curr_plan)} GJ", "", COLOR_PLAN)
-        with col_m2:
-            render_metric_card("🔥", f"{sel_year_rpt}년 실적", f"{fmt_num_safe(total_curr_act)} GJ", f"차이: {fmt_num_safe(total_curr_act - total_curr_plan)} GJ (계획대비)", COLOR_ACT)
-        with col_m3:
-            render_metric_card("🔄", f"{sel_year_rpt-1}년 실적", f"{fmt_num_safe(total_prev_act)} GJ", f"차이: {fmt_num_safe(total_curr_act - total_prev_act)} GJ (전년대비)", COLOR_PREV)
-        with col_d:
-            st.markdown(f"<div style='text-align:center; font-weight:bold; color:#444; margin-bottom:10px;'>🎯 누적 달성률 ({sel_quarter[:2]})</div>", unsafe_allow_html=True)
-            render_rate_donut(achieve_rate, COLOR_ACT)
-
-    st.text_area("분기 핵심 요약", height=120, placeholder=f"예: {sel_year_rpt}년 {sel_quarter[:2]} 누적 총 판매량은 OO TJ로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", key="rpt_at_a_glance")
-    
-    st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
-
-    # --- 3. 전체 판매량 표 정리 & One Page Review ---
-    st.markdown("#### 📊 2. 전체 판매량 요약 및 주요 증감 원인 (One Page Review)")
-    if not df_long_rpt.empty:
-        curr_plan = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "계획")].groupby("그룹")["값"].sum()
-        curr_act = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "실적")].groupby("그룹")["값"].sum()
-        prev_act = df_base[(df_base["연"] == sel_year_rpt-1) & (df_base["계획/실적"] == "실적")].groupby("그룹")["값"].sum()
-        
-        summary_df = pd.DataFrame({
-            f"{sel_year_rpt}년 계획": curr_plan,
-            f"{sel_year_rpt}년 실적": curr_act,
-            f"{sel_year_rpt-1}년 실적": prev_act
-        }).fillna(0)
-        
-        summary_df["계획대비 차이"] = summary_df[f"{sel_year_rpt}년 실적"] - summary_df[f"{sel_year_rpt}년 계획"]
-        summary_df["달성률(%)"] = np.where(summary_df[f"{sel_year_rpt}년 계획"] > 0, (summary_df[f"{sel_year_rpt}년 실적"] / summary_df[f"{sel_year_rpt}년 계획"]) * 100, 0)
-        summary_df["전년대비 증감률(%)"] = np.where(summary_df[f"{sel_year_rpt-1}년 실적"] > 0, (summary_df[f"{sel_year_rpt}년 실적"] / summary_df[f"{sel_year_rpt-1}년 실적"]) * 100, 0)
-        
-        # 총계(소계) 행 추가
-        total_row = summary_df.sum(numeric_only=True)
-        total_row["달성률(%)"] = (total_row[f"{sel_year_rpt}년 실적"] / total_row[f"{sel_year_rpt}년 계획"]) * 100 if total_row[f"{sel_year_rpt}년 계획"] else 0
-        total_row["전년대비 증감률(%)"] = (total_row[f"{sel_year_rpt}년 실적"] / total_row[f"{sel_year_rpt-1}년 실적"]) * 100 if total_row[f"{sel_year_rpt-1}년 실적"] else 0
-        
-        summary_df.loc["💡 소계(합계)"] = total_row
-        summary_df = summary_df.reset_index().rename(columns={"index": "용도"})
-        
-        st.dataframe(center_style(summary_df.style.format({
-            f"{sel_year_rpt}년 계획": "{:,.0f}", f"{sel_year_rpt}년 실적": "{:,.0f}", f"{sel_year_rpt-1}년 실적": "{:,.0f}",
-            "계획대비 차이": "{:,.0f}", "달성률(%)": "{:,.1f}", "전년대비 증감률(%)": "{:,.1f}"
-        })), use_container_width=True, hide_index=True)
-    else:
-        st.warning("👈 좌측 사이드바에서 판매량(.xlsx) 파일을 업로드하거나 레포 파일을 사용해 주세요.")
-        
-    st.text_area("주요 증감 원인 (One Page Review)", height=150, placeholder="표를 바탕으로 전체적인 실적 증감 원인을 종합적으로 분석해 주세요.", key="rpt_one_page_review")
-
-    st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
-
-    # --- 4, 5, 6. 용도별 판매량 분석 (누적 + 월별 막대그래프 + 코멘트) ---
-    def render_usage_trend_report(usage_name, section_num):
-        st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
-        
-        if df_long_rpt.empty:
-            st.info("판매량 데이터가 없습니다.")
-        else:
-            df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
+            # --- 1. 보고서 기준 일자 (연도, 분기 자동 세팅) ---
+            st.markdown("#### 📅 보고서 기준 일자") 
             
-            p_curr_plan = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "계획")].groupby("월")["값"].sum()
-            p_curr_act = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
-            p_prev_act = df_u[(df_u["연"] == sel_year_rpt-1) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
+            # 최신 실적 데이터를 찾아 Default 연도/분기 지정
+            years_available = [2024, 2025, 2026]
+            default_y_index = len(years_available) - 1
+            default_q_index = 3 # 기본은 4Q
             
-            sum_plan = p_curr_plan.sum()
-            sum_act = p_curr_act.sum()
-            sum_prev = p_prev_act.sum()
-            
-            months_list = list(range(1, max_month + 1))
-            
-            col_c, col_m = st.columns([1, 2.5])
-            
-            # (좌측) 누적 막대그래프 
-            with col_c:
-                st.markdown(f"**■ 누적 실적 비교 ({sel_quarter[:2]})**")
-                fig_c = go.Figure()
-                fig_c.add_trace(go.Bar(x=[f"{sel_year_rpt-1}년<br>실적", f"{sel_year_rpt}년<br>계획", f"{sel_year_rpt}년<br>실적"],
-                                       y=[sum_prev, sum_plan, sum_act],
-                                       marker_color=[COLOR_PREV, COLOR_PLAN, COLOR_ACT],
-                                       text=[f"{sum_prev:,.0f}", f"{sum_plan:,.0f}", f"{sum_act:,.0f}"],
-                                       textposition='auto', textfont=dict(size=14)))
-                fig_c.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=350, showlegend=False)
-                st.plotly_chart(fig_c, use_container_width=True)
-                
-            # (우측) 월별 막대그래프
-            with col_m:
-                st.markdown("**■ 월별 실적 비교**")
-                fig_m = go.Figure()
-                fig_m.add_trace(go.Bar(x=months_list, y=[p_prev_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt-1}년 실적', marker_color=COLOR_PREV))
-                fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_plan.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 계획', marker_color=COLOR_PLAN))
-                fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 실적', marker_color=COLOR_ACT))
-                
-                fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title="판매량(GJ)", margin=dict(t=20, b=10, l=10, r=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                st.plotly_chart(fig_m, use_container_width=True)
-            
-        st.text_area(f"{usage_name} 세부 코멘트", height=100, placeholder=f"{usage_name}의 월별 편차 원인 및 특이사항을 기록하세요.", key=f"rpt_comment_{usage_name}")
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    render_usage_trend_report("가정용", 3)
-    render_usage_trend_report("산업용", 4)
-    render_usage_trend_report("업무용", 5)
-
-    st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
-
-    # --- 7, 8. 별첨 (업종별 비교표 & Top 30) ---
-    st.markdown("#### 📎 6~7. 별첨 (업종별 상세 현황)")
-    
-    if df_csv.empty:
-        st.warning("⚠️ 좌측 사이드바 하단 '업종별 데이터 소스'에서 가정용외 CSV 파일을 업로드하면 별첨 상세 리스트가 표시됩니다.")
-    else:
-        def render_attachment_report(usage_label, section_num):
-            st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
-            
-            # 용도 필터링
-            df_sub = df_csv[df_csv["용도"].astype(str).str.contains(usage_label, na=False)]
-            
-            if df_sub.empty:
-                st.info(f"업로드된 CSV 내에 '{usage_label}' 용도 데이터가 존재하지 않습니다.")
-                return
-            
-            # 전체 사용량 계산 (Top 30 비중 계산용)
-            total_usage_sub = df_sub["사용량(mj)"].sum()
-                
-            c1, c2 = st.columns([1, 1.2])
-            with c1:
-                st.markdown(f"**■ 🏢 {usage_label} 세부 업종별 비교표**")
-                # '업종분류' 대신 상세 '업종' 컬럼 사용
-                if "업종" in df_sub.columns:
-                    grp_ind = df_sub.groupby("업종", as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False)
+            if not df_long_rpt.empty:
+                years_available = sorted(df_long_rpt["연"].unique().tolist())
+                actual_data = df_long_rpt[df_long_rpt["계획/실적"] == "실적"]
+                if not actual_data.empty:
+                    max_year = actual_data["연"].max()
+                    max_month = actual_data[actual_data["연"] == max_year]["월"].max()
+                    default_y_index = years_available.index(max_year) if max_year in years_available else len(years_available) - 1
+                    default_q_index = int((max_month - 1) // 3) # 1~3월(0), 4~6월(1), 7~9월(2), 10~12월(3)
                     
-                    # 소계 추가
-                    sum_ind = grp_ind["사용량(mj)"].sum()
-                    sub_ind_df = pd.DataFrame([{"업종": "💡 소계", "사용량(mj)": sum_ind}])
-                    grp_ind = pd.concat([grp_ind, sub_ind_df], ignore_index=True)
-                    
-                    st.dataframe(center_style(grp_ind.style.format({"사용량(mj)": "{:,.0f}"})), use_container_width=True, hide_index=True)
+            # CSV 날짜 파싱 (고객상세 차트용 안전장치 - 모든 연도/월 정보 추출)
+            if not df_csv.empty:
+                if "검침적용일자" in df_csv.columns:
+                    df_csv["날짜_파싱"] = pd.to_datetime(df_csv["검침적용일자"], errors="coerce")
+                elif "매출년월" in df_csv.columns:
+                    df_csv["날짜_파싱"] = pd.to_datetime(df_csv["매출년월"], format="%b-%y", errors="coerce")
                 else:
-                    st.error("데이터에 '업종' 컬럼이 없습니다.")
-                    
-            with c2:
-                st.markdown(f"**■ 🏆 {usage_label} Top 30 업체 List**")
-                if "고객명" in df_sub.columns and "업종" in df_sub.columns:
-                    grp_top = df_sub.groupby(["고객명", "업종"], as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False).head(30)
-                    
-                    # Top 30 소계 및 비율 계산
-                    top30_sum = grp_top["사용량(mj)"].sum()
-                    top30_ratio = (top30_sum / total_usage_sub * 100) if total_usage_sub > 0 else 0
-                    
-                    # 소계 행 추가
-                    subtotal_row = pd.DataFrame([{
-                        "고객명": "💡 소계 (Top 30)", 
-                        "업종": f"전체대비 {top30_ratio:.1f}%", 
-                        "사용량(mj)": top30_sum
-                    }])
-                    grp_top = pd.concat([grp_top, subtotal_row], ignore_index=True)
-                    
-                    # 순위 매기기
-                    ranks = list(range(1, len(grp_top))) + ["-"]
-                    grp_top.insert(0, "순위", ranks)
-                    
-                    st.dataframe(center_style(grp_top.style.format({"사용량(mj)": "{:,.0f}"})), use_container_width=True, hide_index=True)
-                else:
-                    st.error("데이터에 '고객명' 또는 '업종' 컬럼이 없습니다.")
-                    
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            # --- 🔍 고객명 클릭 상세 그래프 기능 ---
-            st.markdown(f"**🔍 {usage_label} 개별 고객 상세 분석**")
-            if "고객명" in df_sub.columns:
-                top_customers = [c for c in grp_top["고객명"] if c != "💡 소계 (Top 30)"]
-                sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}")
+                    df_csv["날짜_파싱"] = pd.to_datetime(f"{years_available[default_y_index]}-01-01")
 
-                if sel_cust != "선택 안함":
-                    c_data = df_sub[df_sub["고객명"] == sel_cust]
-                    c_grp = c_data.groupby(["연_csv", "월_csv"], as_index=False)["사용량(mj)"].sum()
+                df_csv["연_csv"] = df_csv["날짜_파싱"].dt.year.fillna(years_available[default_y_index])
+                df_csv["월_csv"] = df_csv["날짜_파싱"].dt.month.fillna(1)
+            
+            c_y, c_q, c_empty = st.columns([1, 1, 2])
+            with c_y:
+                sel_year_rpt = st.selectbox("기준 연도", years_available, index=default_y_index, key=f"rpt_yr{key_sfx}")
+            with c_q:
+                sel_quarter = st.selectbox("기준 분기", ["1Q (1~3월)", "2Q (1~6월 누적)", "3Q (1~9월 누적)", "4Q (1~12월 누적)"], index=default_q_index, key=f"rpt_qt{key_sfx}")
+            
+            max_month = int(sel_quarter[0]) * 3 
+            
+            st.markdown("<hr style='margin: 10px 0 30px 0;'>", unsafe_allow_html=True)
+
+            # --- 2. At a Glance (대시보드 형태 + 2개 도넛) ---
+            st.markdown("#### 💡 1. At a Glance")
+            
+            if not df_long_rpt.empty:
+                df_base = df_long_rpt[(df_long_rpt["연"].isin([sel_year_rpt, sel_year_rpt-1])) & (df_long_rpt["월"] <= max_month)]
+                
+                total_curr_plan = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "계획")]["값"].sum()
+                total_curr_act = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "실적")]["값"].sum()
+                total_prev_act = df_base[(df_base["연"] == sel_year_rpt-1) & (df_base["계획/실적"] == "실적")]["값"].sum()
+                
+                achieve_rate_plan = (total_curr_act / total_curr_plan * 100) if total_curr_plan else 0
+                achieve_rate_prev = (total_curr_act / total_prev_act * 100) if total_prev_act else 0
+                
+                col_m1, col_m2, col_m3, col_d1, col_d2 = st.columns([1, 1, 1, 0.8, 0.8])
+                with col_m1:
+                    render_metric_card("🎯", f"{sel_year_rpt}년 계획", f"{fmt_num_safe(total_curr_plan)} {unit_str}", "", COLOR_PLAN)
+                with col_m2:
+                    render_metric_card("🔥", f"{sel_year_rpt}년 실적", f"{fmt_num_safe(total_curr_act)} {unit_str}", f"차이: {fmt_num_safe(total_curr_act - total_curr_plan)} {unit_str} (계획대비)", COLOR_ACT)
+                with col_m3:
+                    render_metric_card("🔄", f"{sel_year_rpt-1}년 실적", f"{fmt_num_safe(total_prev_act)} {unit_str}", f"차이: {fmt_num_safe(total_curr_act - total_prev_act)} {unit_str} (전년대비)", COLOR_PREV)
+                with col_d1:
+                    render_rate_donut(achieve_rate_plan, COLOR_ACT, "계획대비 달성률")
+                with col_d2:
+                    render_rate_donut(achieve_rate_prev, COLOR_PREV, "전년대비 증감률")
+
+            st.text_area("분기 핵심 요약", height=120, placeholder=f"예: {sel_year_rpt}년 {sel_quarter[:2]} 누적 총 판매량은 OO {unit_str}로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", key=f"rpt_at_a_glance{key_sfx}")
+            
+            st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
+
+            # --- 3. 전체 판매량 표 정리 & One Page Review ---
+            st.markdown("#### 📊 2. 전체 판매량 요약 및 주요 증감 원인 (One Page Review)")
+            if not df_long_rpt.empty:
+                curr_plan = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "계획")].groupby("그룹")["값"].sum()
+                curr_act = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "실적")].groupby("그룹")["값"].sum()
+                prev_act = df_base[(df_base["연"] == sel_year_rpt-1) & (df_base["계획/실적"] == "실적")].groupby("그룹")["값"].sum()
+                
+                summary_df = pd.DataFrame({
+                    f"{sel_year_rpt}년 계획": curr_plan,
+                    f"{sel_year_rpt}년 실적": curr_act,
+                    f"{sel_year_rpt-1}년 실적": prev_act
+                }).fillna(0)
+                
+                summary_df["계획대비 차이"] = summary_df[f"{sel_year_rpt}년 실적"] - summary_df[f"{sel_year_rpt}년 계획"]
+                summary_df["달성률(%)"] = np.where(summary_df[f"{sel_year_rpt}년 계획"] > 0, (summary_df[f"{sel_year_rpt}년 실적"] / summary_df[f"{sel_year_rpt}년 계획"]) * 100, 0)
+                summary_df["전년대비 증감률(%)"] = np.where(summary_df[f"{sel_year_rpt-1}년 실적"] > 0, (summary_df[f"{sel_year_rpt}년 실적"] / summary_df[f"{sel_year_rpt-1}년 실적"]) * 100, 0)
+                
+                # 총계(소계) 행 추가
+                total_row = summary_df.sum(numeric_only=True)
+                total_row["달성률(%)"] = (total_row[f"{sel_year_rpt}년 실적"] / total_row[f"{sel_year_rpt}년 계획"]) * 100 if total_row[f"{sel_year_rpt}년 계획"] else 0
+                total_row["전년대비 증감률(%)"] = (total_row[f"{sel_year_rpt}년 실적"] / total_row[f"{sel_year_rpt-1}년 실적"]) * 100 if total_row[f"{sel_year_rpt-1}년 실적"] else 0
+                
+                summary_df.loc["💡 소계(합계)"] = total_row
+                summary_df = summary_df.reset_index().rename(columns={"index": "용도"})
+                
+                st.dataframe(center_style(summary_df.style.format({
+                    f"{sel_year_rpt}년 계획": "{:,.0f}", f"{sel_year_rpt}년 실적": "{:,.0f}", f"{sel_year_rpt-1}년 실적": "{:,.0f}",
+                    "계획대비 차이": "{:,.0f}", "달성률(%)": "{:,.1f}", "전년대비 증감률(%)": "{:,.1f}"
+                })), use_container_width=True, hide_index=True)
+            else:
+                st.warning("👈 좌측 사이드바에서 판매량(.xlsx) 파일을 업로드하거나 레포 파일을 사용해 주세요.")
+                
+            st.text_area("주요 증감 원인 (One Page Review)", height=150, placeholder="표를 바탕으로 전체적인 실적 증감 원인을 종합적으로 분석해 주세요.", key=f"rpt_one_page_review{key_sfx}")
+
+            st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
+
+            # --- 4, 5, 6. 용도별 판매량 분석 (누적 + 월별 막대그래프 + 코멘트) ---
+            def render_usage_trend_report(usage_name, section_num, key_sfx):
+                st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
+                
+                if df_long_rpt.empty:
+                    st.info("판매량 데이터가 없습니다.")
+                else:
+                    df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
                     
-                    y_cur = c_grp[c_grp["연_csv"] == sel_year_rpt]
-                    y_prev = c_grp[c_grp["연_csv"] == sel_year_rpt - 1]
+                    p_curr_plan = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "계획")].groupby("월")["값"].sum()
+                    p_curr_act = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
+                    p_prev_act = df_u[(df_u["연"] == sel_year_rpt-1) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
                     
-                    cc1, cc2 = st.columns([1, 2])
-                    with cc1:
-                        fig_cust_cum = go.Figure()
-                        fig_cust_cum.add_trace(go.Bar(x=[f"{sel_year_rpt-1}년", f"{sel_year_rpt}년"], 
-                                                      y=[y_prev['사용량(mj)'].sum(), y_cur['사용량(mj)'].sum()],
-                                                      marker_color=[COLOR_PREV, COLOR_ACT],
-                                                      text=[f"{y_prev['사용량(mj)'].sum():,.0f}", f"{y_cur['사용량(mj)'].sum():,.0f}"], textposition='auto'))
-                        fig_cust_cum.update_layout(title=f"'{sel_cust}' 연간 누적 사용량", margin=dict(t=40,b=10,l=10,r=10), height=300)
-                        st.plotly_chart(fig_cust_cum, use_container_width=True)
+                    sum_plan = p_curr_plan.sum()
+                    sum_act = p_curr_act.sum()
+                    sum_prev = p_prev_act.sum()
+                    
+                    months_list = list(range(1, max_month + 1))
+                    
+                    col_c, col_m = st.columns([1, 2.5])
+                    
+                    # (좌측) 누적 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서 배치)
+                    with col_c:
+                        st.markdown(f"**■ 누적 실적 비교 ({sel_quarter[:2]})**")
+                        fig_c = go.Figure()
+                        fig_c.add_trace(go.Bar(x=[f"{sel_year_rpt}년<br>계획", f"{sel_year_rpt}년<br>실적", f"{sel_year_rpt-1}년<br>실적"],
+                                               y=[sum_plan, sum_act, sum_prev],
+                                               marker_color=[COLOR_PLAN, COLOR_ACT, COLOR_PREV],
+                                               text=[f"{sum_plan:,.0f}", f"{sum_act:,.0f}", f"{sum_prev:,.0f}"],
+                                               textposition='auto', textfont=dict(size=14)))
+                        fig_c.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=350, showlegend=False)
+                        st.plotly_chart(fig_c, use_container_width=True)
                         
-                    with cc2:
-                        fig_cust_mon = go.Figure()
-                        months_c = list(range(1, 13))
-                        fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_prev[y_prev['월_csv']==m]['사용량(mj)'].sum() for m in months_c], name=f"{sel_year_rpt-1}년", marker_color=COLOR_PREV))
-                        fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_cur[y_cur['월_csv']==m]['사용량(mj)'].sum() for m in months_c], name=f"{sel_year_rpt}년", marker_color=COLOR_ACT))
-                        fig_cust_mon.update_layout(title=f"'{sel_cust}' 월별 사용량 추이", barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), margin=dict(t=40,b=10,l=10,r=10), height=300)
-                        st.plotly_chart(fig_cust_mon, use_container_width=True)
+                    # (우측) 월별 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서 배치)
+                    with col_m:
+                        st.markdown("**■ 월별 실적 비교**")
+                        fig_m = go.Figure()
+                        fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_plan.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 계획', marker_color=COLOR_PLAN))
+                        fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 실적', marker_color=COLOR_ACT))
+                        fig_m.add_trace(go.Bar(x=months_list, y=[p_prev_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt-1}년 실적', marker_color=COLOR_PREV))
+                        
+                        fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=20, b=10, l=10, r=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                        st.plotly_chart(fig_m, use_container_width=True)
+                    
+                st.text_area(f"{usage_name} 세부 코멘트", height=100, placeholder=f"{usage_name}의 월별 편차 원인 및 특이사항을 기록하세요.", key=f"rpt_comment_{usage_name}{key_sfx}")
+                st.markdown("<br>", unsafe_allow_html=True)
 
-        render_attachment_report("산업용", 6)
-        render_attachment_report("업무용", 7)
+            render_usage_trend_report("가정용", 3, key_sfx)
+            render_usage_trend_report("산업용", 4, key_sfx)
+            render_usage_trend_report("업무용", 5, key_sfx)
+
+            st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
+
+            # --- 7, 8. 별첨 (업종별 비교표 & Top 30) ---
+            st.markdown("#### 📎 6~7. 별첨 (업종별 상세 현황)")
+            
+            if df_csv.empty or val_col not in df_csv.columns:
+                st.warning(f"⚠️ 업종별 상세 데이터를 보려면 '{unit_str}' 단위에 맞는 데이터({val_col} 컬럼 포함)를 CSV로 업로드해주세요.")
+            else:
+                def render_attachment_report(usage_label, section_num, key_sfx):
+                    st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
+                    
+                    df_sub = df_csv[df_csv["용도"].astype(str).str.contains(usage_label, na=False)]
+                    
+                    if df_sub.empty:
+                        st.info(f"업로드된 CSV 내에 '{usage_label}' 용도 데이터가 존재하지 않습니다.")
+                        return
+                    
+                    # 기준 월(max_month)까지만 데이터 필터링하여 계산
+                    df_sub_filtered = df_sub[df_sub["월_csv"] <= max_month]
+                    total_usage_sub = df_sub_filtered[val_col].sum()
+                        
+                    c1, c2 = st.columns([1, 1.2])
+                    with c1:
+                        st.markdown(f"**■ 🏢 {usage_label} 세부 업종별 비교표**")
+                        if "업종" in df_sub_filtered.columns:
+                            grp_ind = df_sub_filtered.groupby("업종", as_index=False)[val_col].sum().sort_values(val_col, ascending=False)
+                            
+                            sum_ind = grp_ind[val_col].sum()
+                            sub_ind_df = pd.DataFrame([{"업종": "💡 소계", val_col: sum_ind}])
+                            grp_ind = pd.concat([grp_ind, sub_ind_df], ignore_index=True)
+                            
+                            st.dataframe(center_style(grp_ind.style.format({val_col: "{:,.0f}"})), use_container_width=True, hide_index=True)
+                        else:
+                            st.error("데이터에 '업종' 컬럼이 없습니다.")
+                            
+                    with c2:
+                        st.markdown(f"**■ 🏆 {usage_label} Top 30 업체 List**")
+                        if "고객명" in df_sub_filtered.columns and "업종" in df_sub_filtered.columns:
+                            grp_top = df_sub_filtered.groupby(["고객명", "업종"], as_index=False)[val_col].sum().sort_values(val_col, ascending=False).head(30)
+                            
+                            top30_sum = grp_top[val_col].sum()
+                            top30_ratio = (top30_sum / total_usage_sub * 100) if total_usage_sub > 0 else 0
+                            
+                            subtotal_row = pd.DataFrame([{
+                                "고객명": "💡 소계 (Top 30)", 
+                                "업종": f"전체대비 {top30_ratio:.1f}%", 
+                                val_col: top30_sum
+                            }])
+                            grp_top = pd.concat([grp_top, subtotal_row], ignore_index=True)
+                            
+                            ranks = list(range(1, len(grp_top))) + ["-"]
+                            grp_top.insert(0, "순위", ranks)
+                            
+                            st.dataframe(center_style(grp_top.style.format({val_col: "{:,.0f}"})), use_container_width=True, hide_index=True)
+                        else:
+                            st.error("데이터에 '고객명' 또는 '업종' 컬럼이 없습니다.")
+                            
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    
+                    # --- 🔍 고객명 드롭다운 상세 그래프 (모든 연도 과거 데이터 활용) ---
+                    st.markdown(f"**🔍 {usage_label} 개별 고객 상세 분석**")
+                    if "고객명" in df_sub.columns:
+                        # 전체 데이터 기준 모든 고객 리스트 추출 (가나다순 정렬)
+                        all_customers = sorted(df_sub["고객명"].dropna().unique().tolist())
+                        sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + all_customers, key=f"sel_cust_{usage_label}{key_sfx}")
+
+                        if sel_cust != "선택 안함":
+                            # 선택된 고객의 모든 기간 데이터
+                            c_data = df_sub[df_sub["고객명"] == sel_cust]
+                            c_grp = c_data.groupby(["연_csv", "월_csv"], as_index=False)[val_col].sum()
+                            
+                            y_cur = c_grp[(c_grp["연_csv"] == sel_year_rpt) & (c_grp["월_csv"] <= max_month)]
+                            y_prev = c_grp[(c_grp["연_csv"] == sel_year_rpt - 1) & (c_grp["월_csv"] <= max_month)]
+                            
+                            cc1, cc2 = st.columns([1, 2])
+                            with cc1:
+                                fig_cust_cum = go.Figure()
+                                fig_cust_cum.add_trace(go.Bar(x=[f"{sel_year_rpt}년", f"{sel_year_rpt-1}년"], 
+                                                              y=[y_cur[val_col].sum(), y_prev[val_col].sum()],
+                                                              marker_color=[COLOR_ACT, COLOR_PREV],
+                                                              text=[f"{y_cur[val_col].sum():,.0f}", f"{y_prev[val_col].sum():,.0f}"], textposition='auto'))
+                                fig_cust_cum.update_layout(title=f"'{sel_cust}' 누적 사용량 ({sel_quarter[:2]})", margin=dict(t=40,b=10,l=10,r=10), height=300)
+                                st.plotly_chart(fig_cust_cum, use_container_width=True)
+                                
+                            with cc2:
+                                fig_cust_mon = go.Figure()
+                                months_c = list(range(1, max_month + 1))
+                                fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_cur[y_cur['월_csv']==m][val_col].sum() for m in months_c], name=f"{sel_year_rpt}년", marker_color=COLOR_ACT))
+                                fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_prev[y_prev['월_csv']==m][val_col].sum() for m in months_c], name=f"{sel_year_rpt-1}년", marker_color=COLOR_PREV))
+                                fig_cust_mon.update_layout(title=f"'{sel_cust}' 월별 사용량 추이", barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), margin=dict(t=40,b=10,l=10,r=10), height=300)
+                                st.plotly_chart(fig_cust_mon, use_container_width=True)
+
+                render_attachment_report("산업용", 6, key_sfx)
+                render_attachment_report("업무용", 7, key_sfx)
