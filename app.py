@@ -388,9 +388,9 @@ def render_rate_donut(rate: float, color: str, title: str = ""):
     fig.update_layout(
         showlegend=False,
         width=200,
-        height=200,
-        margin=dict(l=0, r=0, t=20, b=0),
-        title=dict(text=title, font=dict(size=14, color="#666"), x=0.5, xanchor='center'),
+        height=230, # 타이틀 잘림 방지를 위해 높이 증가
+        margin=dict(l=0, r=0, t=40, b=0), # 상단 여백 확보
+        title=dict(text=title, font=dict(size=14, color="#666"), x=0.5, xanchor='center', y=0.98) if title else None,
         annotations=[dict(
             text=f"{rate:.1f}%",
             x=0.5, y=0.5,
@@ -460,11 +460,11 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     d1, d2, d3, d4, d5 = st.columns([1, 2, 1, 2, 1])
     with d2:
-        render_rate_donut(plan_rate, "#16a34a")
-        st.caption(f"계획 달성률 · {mode_tag}")
+        render_rate_donut(plan_rate, "#16a34a", "계획 달성률")
+        st.caption(f"({mode_tag})")
     with d4:
-        render_rate_donut(prev_rate, "#f97316")
-        st.caption(f"전년대비 증감률 · {mode_tag}")
+        render_rate_donut(prev_rate, "#f97316", "전년대비 증감률")
+        st.caption(f"({mode_tag})")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2040,12 +2040,11 @@ elif main_tab == "분기별 판매량 보고서":
         if "사용량(m3)" in df_csv.columns:
             df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
             
-    # 단위 선택 탭 생성
+    # 단위 선택 탭 생성 (최상단)
     rpt_tabs = st.tabs(["부피 기준 (천m³)", "열량 기준 (GJ)"])
     
     for idx, rpt_tab in enumerate(rpt_tabs):
         with rpt_tab:
-            # 탭에 따라 데이터프레임과 단위 분기 처리
             if idx == 0:
                 df_long_rpt = long_dict_rpt.get("부피", pd.DataFrame())
                 unit_str = "천m³"
@@ -2057,24 +2056,28 @@ elif main_tab == "분기별 판매량 보고서":
                 val_col = "사용량(mj)"
                 key_sfx = "_gj"
 
-            # --- 1. 보고서 기준 일자 (연도, 분기 자동 세팅) ---
+            # --- 1. 보고서 기준 일자 (연도, 분기 자동 세팅 버그 수정) ---
             st.markdown("#### 📅 보고서 기준 일자") 
             
-            # 최신 실적 데이터를 찾아 Default 연도/분기 지정
             years_available = [2024, 2025, 2026]
             default_y_index = len(years_available) - 1
-            default_q_index = 3 # 기본은 4Q
+            default_q_index = 3 
             
             if not df_long_rpt.empty:
                 years_available = sorted(df_long_rpt["연"].unique().tolist())
-                actual_data = df_long_rpt[df_long_rpt["계획/실적"] == "실적"]
+                # 값이 0보다 큰 '실제 실적'이 존재하는 가장 최신 데이터 추출
+                actual_data = df_long_rpt[(df_long_rpt["계획/실적"] == "실적") & (df_long_rpt["값"] > 0)]
+                
                 if not actual_data.empty:
                     max_year = actual_data["연"].max()
                     max_month = actual_data[actual_data["연"] == max_year]["월"].max()
                     default_y_index = years_available.index(max_year) if max_year in years_available else len(years_available) - 1
-                    default_q_index = int((max_month - 1) // 3) # 1~3월(0), 4~6월(1), 7~9월(2), 10~12월(3)
+                    default_q_index = int((max_month - 1) // 3) 
                     
-            # CSV 날짜 파싱 (고객상세 차트용 안전장치 - 모든 연도/월 정보 추출)
+                    if default_q_index < 0: default_q_index = 0
+                    if default_q_index > 3: default_q_index = 3
+                    
+            # CSV 날짜 파싱 (고객상세 차트용 안전장치)
             if not df_csv.empty:
                 if "검침적용일자" in df_csv.columns:
                     df_csv["날짜_파싱"] = pd.to_datetime(df_csv["검침적용일자"], errors="coerce")
@@ -2096,7 +2099,7 @@ elif main_tab == "분기별 판매량 보고서":
             
             st.markdown("<hr style='margin: 10px 0 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 2. At a Glance (대시보드 형태 + 2개 도넛) ---
+            # --- 2. At a Glance (대시보드 형태 + 2개 도넛 + 비율 표기) ---
             st.markdown("#### 💡 1. At a Glance")
             
             if not df_long_rpt.empty:
@@ -2113,9 +2116,11 @@ elif main_tab == "분기별 판매량 보고서":
                 with col_m1:
                     render_metric_card("🎯", f"{sel_year_rpt}년 계획", f"{fmt_num_safe(total_curr_plan)} {unit_str}", "", COLOR_PLAN)
                 with col_m2:
-                    render_metric_card("🔥", f"{sel_year_rpt}년 실적", f"{fmt_num_safe(total_curr_act)} {unit_str}", f"차이: {fmt_num_safe(total_curr_act - total_curr_plan)} {unit_str} (계획대비)", COLOR_ACT)
+                    sign_plan = "+" if total_curr_act - total_curr_plan > 0 else ""
+                    render_metric_card("🔥", f"{sel_year_rpt}년 실적", f"{fmt_num_safe(total_curr_act)} {unit_str}", f"차이: {sign_plan}{fmt_num_safe(total_curr_act - total_curr_plan)} {unit_str} ({achieve_rate_plan:.1f}%, 계획대비)", COLOR_ACT)
                 with col_m3:
-                    render_metric_card("🔄", f"{sel_year_rpt-1}년 실적", f"{fmt_num_safe(total_prev_act)} {unit_str}", f"차이: {fmt_num_safe(total_curr_act - total_prev_act)} {unit_str} (전년대비)", COLOR_PREV)
+                    sign_prev = "+" if total_curr_act - total_prev_act > 0 else ""
+                    render_metric_card("🔄", f"{sel_year_rpt-1}년 실적", f"{fmt_num_safe(total_prev_act)} {unit_str}", f"차이: {sign_prev}{fmt_num_safe(total_curr_act - total_prev_act)} {unit_str} ({achieve_rate_prev:.1f}%, 전년대비)", COLOR_PREV)
                 with col_d1:
                     render_rate_donut(achieve_rate_plan, COLOR_ACT, "계획대비 달성률")
                 with col_d2:
@@ -2161,11 +2166,11 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 4, 5, 6. 용도별 판매량 분석 (누적 + 월별 막대그래프 + 코멘트) ---
+            # --- 4, 5, 6. 용도별 판매량 분석 (누적 + 월별 막대그래프 + 데이터 라벨) ---
             def render_usage_trend_report(usage_name, section_num, key_sfx):
-                st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                 
                 if df_long_rpt.empty:
+                    st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                     st.info("판매량 데이터가 없습니다.")
                 else:
                     df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
@@ -2178,11 +2183,18 @@ elif main_tab == "분기별 판매량 보고서":
                     sum_act = p_curr_act.sum()
                     sum_prev = p_prev_act.sum()
                     
+                    diff_prev = sum_act - sum_prev
+                    rate_prev = (sum_act / sum_prev * 100) if sum_prev > 0 else 0
+                    sign_prev = "+" if diff_prev > 0 else ""
+                    
+                    # 헤더 옆에 통계 요약 텍스트 추가
+                    st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name} <span style='font-size:16px; color:#1f77b4; font-weight:normal;'>({unit_str} 기준 | 판매량 {sum_act:,.0f}, 전년대비 {sign_prev}{diff_prev:,.0f}, {rate_prev:.1f}%)</span>", unsafe_allow_html=True)
+                    
                     months_list = list(range(1, max_month + 1))
                     
                     col_c, col_m = st.columns([1, 2.5])
                     
-                    # (좌측) 누적 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서 배치)
+                    # (좌측) 누적 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서)
                     with col_c:
                         st.markdown(f"**■ 누적 실적 비교 ({sel_quarter[:2]})**")
                         fig_c = go.Figure()
@@ -2194,13 +2206,18 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_c.update_layout(margin=dict(t=20, b=10, l=10, r=10), height=350, showlegend=False)
                         st.plotly_chart(fig_c, use_container_width=True)
                         
-                    # (우측) 월별 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서 배치)
+                    # (우측) 월별 막대그래프 (계획 -> 당해 실적 -> 전년 실적 순서, 숫자 모두 표기)
                     with col_m:
                         st.markdown("**■ 월별 실적 비교**")
                         fig_m = go.Figure()
-                        fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_plan.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 계획', marker_color=COLOR_PLAN))
-                        fig_m.add_trace(go.Bar(x=months_list, y=[p_curr_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 실적', marker_color=COLOR_ACT))
-                        fig_m.add_trace(go.Bar(x=months_list, y=[p_prev_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt-1}년 실적', marker_color=COLOR_PREV))
+                        
+                        vals_plan = [p_curr_plan.get(m, 0) for m in months_list]
+                        vals_act = [p_curr_act.get(m, 0) for m in months_list]
+                        vals_prev = [p_prev_act.get(m, 0) for m in months_list]
+                        
+                        fig_m.add_trace(go.Bar(x=months_list, y=vals_plan, name=f'{sel_year_rpt}년 계획', marker_color=COLOR_PLAN, text=[f"{v:,.0f}" if v>0 else "" for v in vals_plan], textposition='auto', textfont=dict(size=11)))
+                        fig_m.add_trace(go.Bar(x=months_list, y=vals_act, name=f'{sel_year_rpt}년 실적', marker_color=COLOR_ACT, text=[f"{v:,.0f}" if v>0 else "" for v in vals_act], textposition='auto', textfont=dict(size=11)))
+                        fig_m.add_trace(go.Bar(x=months_list, y=vals_prev, name=f'{sel_year_rpt-1}년 실적', marker_color=COLOR_PREV, text=[f"{v:,.0f}" if v>0 else "" for v in vals_prev], textposition='auto', textfont=dict(size=11)))
                         
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=20, b=10, l=10, r=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
@@ -2271,11 +2288,13 @@ elif main_tab == "분기별 판매량 보고서":
                             
                     st.markdown("<br>", unsafe_allow_html=True)
                     
-                    # --- 🔍 고객명 드롭다운 상세 그래프 (모든 연도 과거 데이터 활용) ---
+                    # --- 🔍 고객명 드롭다운 상세 그래프 (모든 연도, 데이터 레이블 표시) ---
                     st.markdown(f"**🔍 {usage_label} 개별 고객 상세 분석**")
                     if "고객명" in df_sub.columns:
-                        # 전체 데이터 기준 모든 고객 리스트 추출 (가나다순 정렬)
-                        all_customers = sorted(df_sub["고객명"].dropna().unique().tolist())
+                        # 전체 기간 기준 사용량 합산으로 내림차순 정렬 (사용량이 많은 업체가 위로 오도록)
+                        cust_usage_sum = df_sub.groupby("고객명")[val_col].sum().sort_values(ascending=False)
+                        all_customers = cust_usage_sum.index.tolist()
+                        
                         sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + all_customers, key=f"sel_cust_{usage_label}{key_sfx}")
 
                         if sel_cust != "선택 안함":
@@ -2286,21 +2305,36 @@ elif main_tab == "분기별 판매량 보고서":
                             y_cur = c_grp[(c_grp["연_csv"] == sel_year_rpt) & (c_grp["월_csv"] <= max_month)]
                             y_prev = c_grp[(c_grp["연_csv"] == sel_year_rpt - 1) & (c_grp["월_csv"] <= max_month)]
                             
+                            sum_cur_c = y_cur[val_col].sum()
+                            sum_prev_c = y_prev[val_col].sum()
+                            
                             cc1, cc2 = st.columns([1, 2])
                             with cc1:
                                 fig_cust_cum = go.Figure()
                                 fig_cust_cum.add_trace(go.Bar(x=[f"{sel_year_rpt}년", f"{sel_year_rpt-1}년"], 
-                                                              y=[y_cur[val_col].sum(), y_prev[val_col].sum()],
+                                                              y=[sum_cur_c, sum_prev_c],
                                                               marker_color=[COLOR_ACT, COLOR_PREV],
-                                                              text=[f"{y_cur[val_col].sum():,.0f}", f"{y_prev[val_col].sum():,.0f}"], textposition='auto'))
+                                                              text=[f"{sum_cur_c:,.0f}", f"{sum_prev_c:,.0f}"], textposition='auto'))
                                 fig_cust_cum.update_layout(title=f"'{sel_cust}' 누적 사용량 ({sel_quarter[:2]})", margin=dict(t=40,b=10,l=10,r=10), height=300)
                                 st.plotly_chart(fig_cust_cum, use_container_width=True)
                                 
                             with cc2:
                                 fig_cust_mon = go.Figure()
                                 months_c = list(range(1, max_month + 1))
-                                fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_cur[y_cur['월_csv']==m][val_col].sum() for m in months_c], name=f"{sel_year_rpt}년", marker_color=COLOR_ACT))
-                                fig_cust_mon.add_trace(go.Bar(x=months_c, y=[y_prev[y_prev['월_csv']==m][val_col].sum() for m in months_c], name=f"{sel_year_rpt-1}년", marker_color=COLOR_PREV))
+                                
+                                cur_vals = [y_cur[y_cur['월_csv']==m][val_col].sum() for m in months_c]
+                                prev_vals = [y_prev[y_prev['월_csv']==m][val_col].sum() for m in months_c]
+                                
+                                # 당해연도 먼저, 그 다음 전년도 순서 배치 및 숫자 표시
+                                fig_cust_mon.add_trace(go.Bar(
+                                    x=months_c, y=cur_vals, name=f"{sel_year_rpt}년", marker_color=COLOR_ACT,
+                                    text=[f"{v:,.0f}" if v>0 else "" for v in cur_vals], textposition='auto', textfont=dict(size=11)
+                                ))
+                                fig_cust_mon.add_trace(go.Bar(
+                                    x=months_c, y=prev_vals, name=f"{sel_year_rpt-1}년", marker_color=COLOR_PREV,
+                                    text=[f"{v:,.0f}" if v>0 else "" for v in prev_vals], textposition='auto', textfont=dict(size=11)
+                                ))
+                                
                                 fig_cust_mon.update_layout(title=f"'{sel_cust}' 월별 사용량 추이", barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), margin=dict(t=40,b=10,l=10,r=10), height=300)
                                 st.plotly_chart(fig_cust_mon, use_container_width=True)
 
