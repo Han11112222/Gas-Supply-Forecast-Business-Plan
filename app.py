@@ -33,7 +33,9 @@ DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
 DEFAULT_SUPPLY_XLSX = "공급량(계획_실적).xlsx"
 DEFAULT_CSV = "가정용외_202601.csv"
 
-# 코멘트 저장용 로컬 DB 파일 경로
+# ─────────────────────────────────────────────────────────
+# 코멘트 DB 저장 및 UI 유틸 (PW: 1234)
+# ─────────────────────────────────────────────────────────
 COMMENT_DB_FILE = "report_comments_db.json"
 
 def load_comments_db():
@@ -48,6 +50,41 @@ def load_comments_db():
 def save_comments_db(db_data):
     with open(COMMENT_DB_FILE, "w", encoding="utf-8") as f:
         json.dump(db_data, f, ensure_ascii=False, indent=4)
+
+def render_comment_section(title, db_key, curr_db, comments_db, height, placeholder, widget_key):
+    """개별 코멘트 저장 및 PW(1234) 보안 수정/삭제 UI 생성 함수"""
+    st.markdown(f"**{title}**")
+    saved_text = curr_db.get(db_key, None)
+    
+    if saved_text is not None:
+        # 이미 저장된 내용이 있을 경우 -> 읽기 전용 모드로 표시
+        st.info(saved_text)
+        
+        # 비밀번호를 입력해야 수정/삭제가 가능한 Expander
+        with st.expander("🔒 코멘트 수정/삭제 (비밀번호 필요)"):
+            pw = st.text_input("비밀번호(PW) 입력", type="password", key=f"pw_{widget_key}")
+            if pw == "1234":
+                new_text = st.text_area("내용 수정", value=saved_text, height=height, key=f"edit_ta_{widget_key}", label_visibility="collapsed")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 수정 내용 저장", key=f"edit_save_{widget_key}", use_container_width=True):
+                        curr_db[db_key] = new_text
+                        save_comments_db(comments_db)
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️ 코멘트 삭제", key=f"del_{widget_key}", use_container_width=True):
+                        curr_db.pop(db_key, None)
+                        save_comments_db(comments_db)
+                        st.rerun()
+            elif pw != "":
+                st.error("❌ 비밀번호가 일치하지 않습니다.")
+    else:
+        # 저장된 내용이 없을 경우 -> 신규 입력 모드
+        input_text = st.text_area("내용 입력", height=height, placeholder=placeholder, key=f"ta_{widget_key}", label_visibility="collapsed")
+        if st.button("💾 이 코멘트 저장", key=f"save_{widget_key}"):
+            curr_db[db_key] = input_text
+            save_comments_db(comments_db)
+            st.rerun()
 
 
 # 엑셀 헤더 → 분석 그룹 매핑 (판매량용)
@@ -120,6 +157,7 @@ def center_style(styler):
         [dict(selector="th", props=[("text-align", "center")])]
     )
     return styler
+
 
 def highlight_subtotal(s):
     """표의 '💡 소계', '💡 총계', '💡 합계' 행을 연한 회색으로 하이라이트."""
@@ -2230,7 +2268,6 @@ elif main_tab == "분기별 판매량 보고서":
                 if df_long_rpt.empty:
                     st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                     st.info("판매량 데이터가 없습니다.")
-                    return ""
                 else:
                     df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
                     
