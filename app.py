@@ -33,7 +33,9 @@ DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
 DEFAULT_SUPPLY_XLSX = "공급량(계획_실적).xlsx"
 DEFAULT_CSV = "가정용외_202601.csv"
 
-# 코멘트 저장용 로컬 DB 파일 경로
+# ─────────────────────────────────────────────────────────
+# 코멘트 DB 저장 및 UI 유틸 (PW: 1234)
+# ─────────────────────────────────────────────────────────
 COMMENT_DB_FILE = "report_comments_db.json"
 
 def load_comments_db():
@@ -48,6 +50,41 @@ def load_comments_db():
 def save_comments_db(db_data):
     with open(COMMENT_DB_FILE, "w", encoding="utf-8") as f:
         json.dump(db_data, f, ensure_ascii=False, indent=4)
+
+def render_comment_section(title, db_key, curr_db, comments_db, height, placeholder, widget_key):
+    """개별 코멘트 저장 및 PW(1234) 보안 수정/삭제 UI 생성 함수"""
+    st.markdown(f"**{title}**")
+    saved_text = curr_db.get(db_key, None)
+    
+    if saved_text is not None:
+        # 이미 저장된 내용이 있을 경우 -> 읽기 전용 모드로 표시
+        st.info(saved_text)
+        
+        # 비밀번호를 입력해야 수정/삭제가 가능한 Expander
+        with st.expander("🔒 코멘트 수정/삭제 (비밀번호 필요)"):
+            pw = st.text_input("비밀번호(PW) 입력", type="password", key=f"pw_{widget_key}")
+            if pw == "1234":
+                new_text = st.text_area("내용 수정", value=saved_text, height=height, key=f"edit_ta_{widget_key}", label_visibility="collapsed")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 수정 내용 저장", key=f"edit_save_{widget_key}", use_container_width=True):
+                        curr_db[db_key] = new_text
+                        save_comments_db(comments_db)
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️ 코멘트 삭제", key=f"del_{widget_key}", use_container_width=True):
+                        curr_db.pop(db_key, None)
+                        save_comments_db(comments_db)
+                        st.rerun()
+            elif pw != "":
+                st.error("❌ 비밀번호가 일치하지 않습니다.")
+    else:
+        # 저장된 내용이 없을 경우 -> 신규 입력 모드
+        input_text = st.text_area("내용 입력", height=height, placeholder=placeholder, key=f"ta_{widget_key}", label_visibility="collapsed")
+        if st.button("💾 이 코멘트 저장", key=f"save_{widget_key}"):
+            curr_db[db_key] = input_text
+            save_comments_db(comments_db)
+            st.rerun()
 
 
 # 엑셀 헤더 → 분석 그룹 매핑 (판매량용)
@@ -120,6 +157,7 @@ def center_style(styler):
         [dict(selector="th", props=[("text-align", "center")])]
     )
     return styler
+
 
 def highlight_subtotal(s):
     """표의 '💡 소계', '💡 총계', '💡 합계' 행을 연한 회색으로 하이라이트."""
@@ -369,7 +407,6 @@ def render_section_selector(
 # 판매량 공용 시각 카드/도넛
 # ─────────────────────────────────────────────────────────
 def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: str = "#1f77b4"):
-    # [수정] main 글자 크기를 28px로 줄이고 줄바꿈을 방지하여 가로폭 침범 해결
     html = f"""
     <div style="
         background-color:#ffffff;
@@ -2055,7 +2092,6 @@ elif main_tab == "공급량 분석(일)":
 elif main_tab == "분기별 판매량 보고서":
     st.markdown("## 📑 분기별 판매량 보고서")
     
-    # --- 0. 보고서용 데이터 및 로컬 DB 로드 ---
     long_dict_rpt: Dict[str, pd.DataFrame] = {}
     if 'excel_bytes' in locals() and excel_bytes is not None:
         sheets_rpt = load_all_sheets(excel_bytes)
@@ -2088,10 +2124,8 @@ elif main_tab == "분기별 판매량 보고서":
         if "사용량(m3)" in df_csv.columns:
             df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
             
-    # DB 데이터 로딩
     comments_db = load_comments_db()
             
-    # 단위 선택 탭 생성
     rpt_tabs = st.tabs(["부피 기준 (천m³)", "열량 기준 (GJ)"])
     
     for idx, rpt_tab in enumerate(rpt_tabs):
@@ -2150,7 +2184,6 @@ elif main_tab == "분기별 판매량 보고서":
             
             max_month = int(sel_quarter[0]) * 3 
             
-            # 현재 연/분기에 해당하는 DB Key
             report_db_key = f"{sel_year_rpt}_{sel_quarter[:2]}_{unit_str}"
             if report_db_key not in comments_db:
                 comments_db[report_db_key] = {}
@@ -2171,7 +2204,6 @@ elif main_tab == "분기별 판매량 보고서":
                 achieve_rate_plan = (total_curr_act / total_curr_plan * 100) if total_curr_plan else 0
                 achieve_rate_prev = (total_curr_act / total_prev_act * 100) if total_prev_act else 0
                 
-                # [수정] 1.1 폭 배정하여 글자가 두 줄로 쪼개지지 않도록 방어
                 col_m1, col_m2, col_m3, col_d1, col_d2 = st.columns([1.1, 1.25, 1.25, 0.7, 0.7])
                 with col_m1:
                     render_metric_card("🎯", f"{sel_year_rpt}년 계획", f"{fmt_num_safe(total_curr_plan)} {unit_str}", "", COLOR_PLAN)
@@ -2186,7 +2218,7 @@ elif main_tab == "분기별 판매량 보고서":
                 with col_d2:
                     render_rate_donut(achieve_rate_prev, COLOR_PREV, "전년대비 증감률")
 
-            txt_glance = st.text_area("분기 핵심 요약", value=curr_db.get("glance", ""), height=120, placeholder=f"예: {sel_year_rpt}년 {sel_quarter[:2]} 누적 총 판매량은 OO {unit_str}로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", key=f"rpt_at_a_glance{key_sfx}")
+            render_comment_section("📝 분기 핵심 요약 작성", "glance", curr_db, comments_db, 120, f"예: {sel_year_rpt}년 {sel_quarter[:2]} 누적 총 판매량은 OO {unit_str}로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", f"glance_{key_sfx}")
             
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
@@ -2226,7 +2258,7 @@ elif main_tab == "분기별 판매량 보고서":
             else:
                 st.warning("👈 좌측 사이드바에서 판매량(.xlsx) 파일을 업로드하거나 레포 파일을 사용해 주세요.")
                 
-            txt_review = st.text_area("주요 증감 원인 (One Page Review)", value=curr_db.get("review", ""), height=150, placeholder="표를 바탕으로 전체적인 실적 증감 원인을 종합적으로 분석해 주세요.", key=f"rpt_one_page_review{key_sfx}")
+            render_comment_section("📝 주요 증감 원인 작성 (One Page Review)", "review", curr_db, comments_db, 150, "표를 바탕으로 전체적인 실적 증감 원인을 종합적으로 분석해 주세요.", f"review_{key_sfx}")
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
@@ -2236,7 +2268,6 @@ elif main_tab == "분기별 판매량 보고서":
                 if df_long_rpt.empty:
                     st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                     st.info("판매량 데이터가 없습니다.")
-                    return ""
                 else:
                     df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
                     
@@ -2265,7 +2296,6 @@ elif main_tab == "분기별 판매량 보고서":
                     
                     with col_c:
                         st.markdown(f"**■ 누적 실적 비교 ({sel_quarter[:2]})**")
-                        # [수정] 박스를 차트 바로 위로 붙이고, 진한 회색배경/푸른계열 글씨 적용
                         st.markdown(
                             f"""
                             <div style="background-color: #e2e8f0; border-left: 5px solid #1e3a8a; padding: 10px 10px; margin-bottom: 0px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
@@ -2283,13 +2313,11 @@ elif main_tab == "분기별 판매량 보고서":
                                                marker_color=[COLOR_PLAN, COLOR_ACT, COLOR_PREV],
                                                text=[f"{sum_plan:,.0f}", f"{sum_act:,.0f}", f"{sum_prev:,.0f}"],
                                                textposition='auto', textfont=dict(size=14)))
-                        # [수정] 그래프 높이 420 (세로로 20% 늘림), 여백 일치
                         fig_c.update_layout(margin=dict(t=25, b=10, l=10, r=10), height=420, showlegend=False)
                         st.plotly_chart(fig_c, use_container_width=True)
                         
                     with col_m:
                         st.markdown("**■ 월별 실적 비교**")
-                        # 왼쪽 박스 높이만큼 투명 여백을 주어 양쪽 차트 윗선을 일직선으로 맞춤
                         st.markdown("<div style='padding: 1px; margin-bottom: 27px; line-height: 1.5;'>&nbsp;<br>&nbsp;</div>", unsafe_allow_html=True)
                         
                         fig_m = go.Figure()
@@ -2305,13 +2333,12 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                     
-                txt_cmt = st.text_area(f"{usage_name} 세부 코멘트", value=curr_db.get(db_key, ""), height=100, placeholder=f"{usage_name}의 월별 편차 원인 및 특이사항을 기록하세요.", key=f"rpt_comment_{usage_name}{key_sfx}")
+                render_comment_section(f"📝 {usage_name} 세부 코멘트 작성", db_key, curr_db, comments_db, 100, f"{usage_name}의 월별 편차 원인 및 특이사항을 기록하세요.", f"{usage_name}_{key_sfx}")
                 st.markdown("<br>", unsafe_allow_html=True)
-                return txt_cmt
 
-            txt_home = render_usage_trend_report("가정용", 3, key_sfx, "home")
-            txt_ind = render_usage_trend_report("산업용", 4, key_sfx, "ind")
-            txt_biz = render_usage_trend_report("업무용", 5, key_sfx, "biz")
+            render_usage_trend_report("가정용", 3, key_sfx, "home")
+            render_usage_trend_report("산업용", 4, key_sfx, "ind")
+            render_usage_trend_report("업무용", 5, key_sfx, "biz")
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
@@ -2499,12 +2526,11 @@ elif main_tab == "분기별 판매량 보고서":
                                                                   marker_color=[COLOR_ACT, COLOR_PREV],
                                                                   text=[f"{sum_cur_c:,.0f}", f"{sum_prev_c:,.0f}"], textposition='auto'))
                                     
-                                    # [수정] 차트 안쪽 위쪽에 예쁜 어노테이션으로 증감/비율 표기
                                     fig_cust_cum.add_annotation(
                                         x=0.5, y=1.05, xref="paper", yref="paper",
                                         text=f"<b>{yoy_text}</b>",
-                                        showarrow=False, font=dict(size=14, color="#d32f2f" if diff_val < 0 else "#1e3a8a"),
-                                        bgcolor="#f1f5f9", bordercolor="#cbd5e1", borderwidth=1, borderpad=5
+                                        showarrow=False, font=dict(size=13, color="#d32f2f" if diff_val < 0 else "#1f77b4"),
+                                        bgcolor="#f8f9fa", bordercolor="#d0d7e5", borderwidth=1, borderpad=4
                                     )
                                     
                                     fig_cust_cum.update_layout(title=f"'{sel_cust}' 누적 사용량 ({sel_quarter[:2]})", margin=dict(t=50,b=10,l=10,r=10), height=350)
@@ -2536,26 +2562,12 @@ elif main_tab == "분기별 판매량 보고서":
                 render_attachment_report("산업용", 6, key_sfx)
                 render_attachment_report("업무용", 7, key_sfx)
             
-            # --- 💾 저장 & 🖨️ PDF 인쇄 ---
+            # --- 🖨️ PDF 인쇄 기능 ---
             st.markdown("<hr style='border-top: 2px solid #bbb; margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
-            st.markdown("### 💾 보고서 코멘트 저장 및 인쇄")
+            st.markdown("### 🖨️ 보고서 출력")
             
-            c_save, c_print = st.columns(2)
-            with c_save:
-                # 사용자가 입력한 데이터를 JSON에 저장하는 버튼
-                if st.button("📝 현재 작성된 모든 코멘트 저장", use_container_width=True, key=f"btn_save_{key_sfx}"):
-                    curr_db["glance"] = txt_glance
-                    curr_db["review"] = txt_review
-                    curr_db["home"] = txt_home
-                    curr_db["ind"] = txt_ind
-                    curr_db["biz"] = txt_biz
-                    save_comments_db(comments_db)
-                    st.success("✔️ 팀장님 보고용 코멘트가 안전하게 저장되었습니다!")
-            
-            with c_print:
-                # 자바스크립트를 이용해 브라우저 인쇄(PDF 저장) 기능 호출
-                st.markdown("""
-                    <button onclick="window.print()" style="padding: 9px 20px; font-size: 16px; border-radius: 8px; background-color: #2563eb; color: white; border: none; cursor: pointer; width: 100%; font-weight: bold;">
-                        🖨️ 현재 화면 전체를 PDF로 다운로드 (인쇄)
-                    </button>
-                """, unsafe_allow_html=True)
+            st.markdown("""
+                <button onclick="window.print()" style="padding: 12px 20px; font-size: 16px; border-radius: 8px; background-color: #1e3a8a; color: white; border: none; cursor: pointer; width: 100%; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    🖨️ 현재 화면 전체를 PDF로 다운로드 (인쇄)
+                </button>
+            """, unsafe_allow_html=True)
