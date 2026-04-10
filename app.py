@@ -2268,6 +2268,7 @@ elif main_tab == "분기별 판매량 보고서":
                 if df_long_rpt.empty:
                     st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                     st.info("판매량 데이터가 없습니다.")
+                    return ""
                 else:
                     df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
                     
@@ -2499,9 +2500,9 @@ elif main_tab == "분기별 판매량 보고서":
                             
                             st.markdown("<br>", unsafe_allow_html=True)
                             
-                            st.markdown(f"**🔍 {usage_label} Top 30 개별 고객 상세 차트**")
+                            st.markdown(f"**🔍 {usage_label} 개별 고객 상세 차트**")
                             top_customers = [c for c in grp_top["고객명"] if c != "💡 소계"]
-                            sel_cust = st.selectbox(f"상세 분석할 Top 30 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}{key_sfx}")
+                            sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}{key_sfx}")
 
                             if sel_cust != "선택 안함":
                                 c_data = df_sub[df_sub["고객명"] == sel_cust]
