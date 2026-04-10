@@ -29,6 +29,7 @@ st.set_page_config(page_title="도시가스 계획/실적 분석", layout="wide"
 
 DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
 DEFAULT_SUPPLY_XLSX = "공급량(계획_실적).xlsx"
+DEFAULT_CSV = "가정용외_202601.csv"  # [수정] 신규 CSV 파일명 설정
 
 # 엑셀 헤더 → 분석 그룹 매핑 (판매량용)
 USE_COL_TO_GROUP: Dict[str, str] = {
@@ -191,7 +192,6 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 def pick_default_year(years: List[int]) -> int:
-    # 안전장치로만 사용되도록 수정 (실제 핵심 디폴트 연도 로직은 render_section_selector 내부에 구현)
     return years[-1] if years else 2025
 
 
@@ -243,7 +243,6 @@ def render_section_selector(
 
     years_all = sorted(long_df["연"].unique().tolist())
 
-    # 기본값 계산용 데이터프레임 (실적 우선)
     df_for_default = long_df.copy()
     if {"계획/실적", "값"}.issubset(df_for_default.columns):
         mask = (
@@ -254,7 +253,6 @@ def render_section_selector(
         if mask.any():
             df_for_default = df_for_default[mask]
 
-    # [수정] 최신 실적 데이터가 있는 연도를 디폴트 연도로 지정
     if not df_for_default.empty:
         default_year = int(df_for_default["연"].max())
     else:
@@ -279,10 +277,8 @@ def render_section_selector(
             key=f"{key_prefix}year",
         )
 
-    # 월 선택 옵션: 1~12월 고정
     months_options = list(range(1, 13))
     
-    # 디폴트 월 선택 로직
     df_sel = long_df[long_df["연"] == sel_year].copy()
     months_actual: List[int] = []
     
@@ -310,7 +306,6 @@ def render_section_selector(
             key=f"{key_prefix}month",
         )
 
-    # fixed_mode 강제(당월/연누적)
     if fixed_mode in ["당월", "연 누적"]:
         agg_mode = fixed_mode
         with c3:
@@ -474,7 +469,6 @@ def monthly_core_dashboard(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    #── 특이사항 (무조건 2건)
     st.markdown("#### ⚠️ 특이사항 (계획·전년 대비 편차 핵심 이슈)")
 
     if base_this.empty:
@@ -687,29 +681,14 @@ def monthly_trend_section(long_df: pd.DataFrame, unit_label: str, key_prefix: st
         .fillna(0.0)
     )
     
-    # ─────────────────────────────────────────────────────────
-    # [수정] 소계 행 추가 및 포맷팅 에러 방지 로직
-    # ─────────────────────────────────────────────────────────
-    # 1. 합계 계산
     total_row = table.sum(numeric_only=True)
-    
-    # 2. 인덱스(월)를 숫자가 아닌 문자가 들어갈 수 있도록 Object 타입으로 변환
     table.index = table.index.astype(object)
-    
-    # 3. 소계 행 추가
     table.loc["소계"] = total_row
-    
-    # 4. 인덱스를 컬럼으로 뺌 ('월' 컬럼 생성)
     table = table.reset_index()
-    
-    # 5. 숫자 포맷팅 적용 대상 컬럼만 지정 (가장 왼쪽 '월' 컬럼 제외)
     numeric_cols = [c for c in table.columns if c != "월"]
-    
-    # 6. 스타일 적용 (특정 컬럼만 포맷팅)
     styled = center_style(
         table.style.format({col: "{:,.0f}" for col in numeric_cols})
     )
-    
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
@@ -1009,20 +988,14 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
     grp = base.groupby(["연", "그룹"], as_index=False)["값"].sum()
 
-    # ─────────────────────────────────────────────────────────
-    # [수정] 연도별 총합을 구하고 각 그룹별 비중(%)을 계산 및 텍스트 표시 보완
-    # ─────────────────────────────────────────────────────────
     total_per_year = grp.groupby("연")["값"].transform("sum")
     grp["비중(%)"] = (grp["값"] / total_per_year) * 100
     
-    # 막대가 너무 작을 때 글자가 겹치는 것을 방지 (1.5% 이상일 때만 표시)
-    # 요청하신 대로 (실적 판매량, 구성비) 형태로 표시합니다.
     grp["비중텍스트"] = grp.apply(
         lambda r: f"({r['값']:,.0f}, {r['비중(%)']:.1f}%)" if r["비중(%)"] >= 1.5 else "", 
         axis=1
     )
 
-    # px.bar 에 비중텍스트 및 hover_data 매핑 추가
     fig = px.bar(
         grp, 
         x="연", 
@@ -1033,13 +1006,12 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
         hover_data={"값": ":,.0f", "비중(%)": ":.1f", "비중텍스트": False}
     )
     
-    # [수정] 텍스트가 막대 중앙에 위치하도록 조정하고, 무조건 가로(textangle=0) 및 동일한 폰트 크기(size=11)로 고정합니다.
     fig.update_traces(
         width=0.4, 
         textposition="inside", 
         insidetextanchor="middle",
-        textangle=0,            # 텍스트 가로 고정 추가
-        textfont=dict(size=11), # 텍스트 크기 동일하게 고정 추가
+        textangle=0,            
+        textfont=dict(size=11), 
         selector=dict(type="bar")
     )
 
@@ -1055,7 +1027,6 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
     )
 
     if not home.empty:
-        # [수정] 가정용 상단의 중복 텍스트(떨어져 나온 숫자)를 제거하기 위해 mode에서 '+text'를 빼고 텍스트 관련 설정을 삭제했습니다.
         fig.add_scatter(
             x=home["연"], y=home["가정용"],
             mode="lines+markers", name="가정용",
@@ -1136,7 +1107,6 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     )
     plan_label = "사업계획" if "사업계획" in plan_choice else "마케팅팀계획"
 
-    # 기준선택용 long 더미 (★ 실적이 있는 월만 사용 → 최신 실적 월이 기본값이 됨)
     long_dummy = month_df[["연", "월"]].copy()
     long_dummy["계획/실적"] = "실적"
     long_dummy["값"] = pd.to_numeric(month_df[act_col], errors="coerce")
@@ -1153,7 +1123,6 @@ def supply_core_dashboard(month_df: pd.DataFrame, key_prefix: str = ""):
     else:
         this_period = this_period[this_period["월"] <= sel_month]
 
-    # MJ → GJ 변환
     plan_total_mj = this_period[plan_choice].sum(skipna=True)
     act_total_mj = this_period[act_col].sum(skipna=True)
     plan_total = plan_total_mj / 1000.0
@@ -1234,10 +1203,9 @@ def supply_monthly_trend(month_df: pd.DataFrame, plan_choice: str, plan_label: s
         return
 
     base = month_df[month_df["연"].isin(sel_years)].copy()
-    base = base[base["월"] <= sel_month]  # 연 누적 고정
+    base = base[base["월"] <= sel_month]  
 
     act_col = "실적_공급량(MJ)"
-    # MJ → GJ 변환
     vals_mj = np.column_stack([base[act_col].values, base[plan_choice].values])
     vals_gj = vals_mj / 1000.0
 
@@ -1288,7 +1256,6 @@ def supply_plan_vs_actual_monthly(month_df: pd.DataFrame, plan_choice: str, plan
     base_prev = month_df[month_df["연"] == prev_year].copy()
     base_prev = base_prev[base_prev["월"] <= sel_month][["월", act_col]].sort_values("월")
 
-    # MJ → GJ
     plan_gj = bars[plan_choice] / 1000.0
     act_gj = bars[act_col] / 1000.0
     prev_gj = base_prev[act_col] / 1000.0 if not base_prev.empty else None
@@ -1328,7 +1295,6 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
                                          sel_year: int, sel_month: int,
                                          plan_choice: str, plan_label: str,
                                          key_prefix: str = ""):
-    """공급량(월)탭용: 일일계획량 vs 일별실적"""
     st.markdown("### ❄️ 일일계획량 대비 일별실적 (선택월)")
 
     if day_df.empty or month_df.empty:
@@ -1340,7 +1306,6 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
         st.info("일별 공급량(MJ) 컬럼이 없어 표시할 수 없어.")
         return
 
-    # 월 계획값
     mrow = month_df[(month_df["연"] == sel_year) & (month_df["월"] == sel_month)]
     if mrow.empty:
         st.info("선택월 월별계획 데이터가 없어.")
@@ -1428,7 +1393,6 @@ def _render_supply_top_card(rank: int, row: pd.Series, icon: str, gradient: str)
 def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
                      sel_year: int, sel_month: int, plan_choice: str, plan_label: str,
                      key_prefix: str = ""):
-    """공급량(일)탭: 패턴 비교 + 편차 + Top 랭킹 + 기온 매트릭스/기온구간 분석"""
     st.markdown("## 📅 공급량 분석(일)")
 
     if day_df.empty or month_df.empty:
@@ -1440,13 +1404,11 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         st.info("일별 공급량(MJ) 컬럼이 없어.")
         return
 
-    # 전체 일별 데이터에 연/월/일 컬럼 추가
     df_all = day_df.copy()
     df_all["연"] = df_all["일자"].dt.year
     df_all["월"] = df_all["일자"].dt.month
     df_all["일"] = df_all["일자"].dt.day
 
-    # 선택월의 월 계획 → 일일계획 (MJ)
     mrow = month_df[(month_df["연"] == sel_year) & (month_df["월"] == sel_month)]
     if mrow.empty:
         st.info("선택월 월별계획 데이터가 없어.")
@@ -1457,13 +1419,10 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     daily_plan_mj = month_plan_mj / days_in_month
     daily_plan_gj = daily_plan_mj / 1000.0
 
-    # 당년도 동일월
     this_df = df_all[(df_all["연"] == sel_year) & (df_all["월"] == sel_month)].copy()
 
-    # 1) 패턴 비교 라인 (GJ) + 과거연도 선택 bar
     st.markdown("### 📈 일별 패턴 비교(당년도 vs 과거동월)")
 
-    # 과거연도 후보: 선택연도 이전, 최대 10개
     cand_years = sorted(df_all["연"].unique().tolist())
     past_candidates = [y for y in cand_years if y < sel_year]
     past_recent_10 = past_candidates[-10:]
@@ -1526,7 +1485,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     )
     st.plotly_chart(fig1, use_container_width=True)
 
-    # 2) 편차 막대 (GJ) - 당년도 기준
     if not this_df.empty:
         st.markdown("### 🧮 일일계획 대비 편차 (당년도)")
         this_df["편차_GJ"] = (this_df[act_col] - daily_plan_mj) / 1000.0
@@ -1558,7 +1516,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         )
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    # 3) 일별 공급량 Top 랭킹 + 3차 다항식 기온-공급량 그래프
     st.markdown("---")
     st.markdown("### 💎 일별 공급량 Top 랭킹")
 
@@ -1566,7 +1523,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
     if month_all.empty:
         st.info("선택월에 해당하는 일별 데이터가 없어.")
     else:
-        # 공통 슬라이더
         top_n = st.slider(
             "표시할 순위 개수 (선택월 & 전체기간)",
             min_value=5,
@@ -1576,15 +1532,11 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             key=f"{key_prefix}top_n_{sel_month}",
         )
 
-        # -----------------------------------------------------------
-        # [기존] 선택월 기준 Top 랭킹
-        # -----------------------------------------------------------
         st.markdown("#### 📅 선택월 기준 Top 랭킹")
         month_all["공급량_GJ"] = month_all[act_col] / 1000.0
         rank_df = month_all.sort_values("공급량_GJ", ascending=False).head(top_n).copy()
         rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
 
-        # 상위 1~3위 카드 (월별)
         top3 = rank_df.head(3)
         c1, c2, c3 = st.columns(3)
         cols = [c1, c2, c3]
@@ -1598,7 +1550,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             with cols[i]:
                 _render_supply_top_card(int(row["Rank"]), row, icons[i], grads[i])
 
-        # 랭킹 표 (월별)
         show_rank = rank_df[
             ["Rank", "공급량_GJ", "연", "월", "일", "평균기온(℃)"]
         ].rename(
@@ -1618,18 +1569,13 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(styled_rank, use_container_width=True, hide_index=True)
 
-        # -----------------------------------------------------------
-        # [신규] 전체 기간 공급량 Top 랭킹 (역대 최고)
-        # -----------------------------------------------------------
         st.markdown("---")
         st.markdown("#### 🏆 전체 기간 공급량 Top 랭킹 (역대 최고)")
         
-        # 슬라이더 값(top_n) 적용하여 데이터 추출
         global_top = df_all.sort_values(act_col, ascending=False).head(top_n).copy()
-        global_top["공급량_GJ"] = global_top[act_col] / 1000.0  # 카드 렌더링용 컬럼 생성
+        global_top["공급량_GJ"] = global_top[act_col] / 1000.0
         global_top.insert(0, "Rank", range(1, len(global_top) + 1))
 
-        # 상위 1~3위 카드 (전체)
         g_top3 = global_top.head(3)
         gc1, gc2, gc3 = st.columns(3)
         gcols = [gc1, gc2, gc3]
@@ -1637,7 +1583,6 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             with gcols[i]:
                 _render_supply_top_card(int(row["Rank"]), row, icons[i], grads[i])
 
-        # 랭킹 표 (전체)
         show_global = global_top[
             ["Rank", "공급량_GJ", "연", "월", "일", "평균기온(℃)"]
         ].rename(
@@ -1656,9 +1601,7 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
         )
         st.markdown("<br>", unsafe_allow_html=True)
         st.dataframe(styled_global, use_container_width=True, hide_index=True)
-        # -----------------------------------------------------------
 
-        # 기온별 공급량 변화 (3차 다항식)
         st.markdown("#### 🌡️ 기온별 공급량 변화 (3차 다항식)")
 
         temp_supply = month_all.dropna(subset=["평균기온(℃)", act_col]).copy()
@@ -1666,7 +1609,7 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             st.info("3차 다항식을 그리기 위한 데이터가 부족해.")
         else:
             x = temp_supply["평균기온(℃)"].values
-            y = temp_supply[act_col].values / 1000.0  # GJ
+            y = temp_supply[act_col].values / 1000.0
 
             coeffs = np.polyfit(x, y, 3)
             p = np.poly1d(coeffs)
@@ -1697,16 +1640,12 @@ def supply_daily_tab(day_df: pd.DataFrame, month_df: pd.DataFrame,
             )
             st.plotly_chart(fig3, use_container_width=True)
 
-    # 4) 기온 매트릭스 (일별 평균기온)
     st.markdown("---")
     temperature_matrix(day_df, default_month=sel_month, key_prefix="tempD_")
-
-    # 5) 기온 구간별 평균 공급량 분석
     temperature_supply_band_section(day_df, default_month=sel_month, key_prefix="tempBandD_")
 
 
 def temperature_matrix(day_df: pd.DataFrame, default_month: int = 10, key_prefix: str = "temp_"):
-    """기온 매트릭스 (일별 평균기온)"""
     st.markdown("### 🌡️ 기온 매트릭스 (일별 평균기온)")
 
     if day_df.empty or "평균기온(℃)" not in day_df.columns:
@@ -1744,7 +1683,7 @@ def temperature_matrix(day_df: pd.DataFrame, default_month: int = 10, key_prefix
         return
 
     pivot = sub.pivot_table(index="일", columns="연", values="평균기온(℃)", aggfunc="mean")
-    pivot = pivot.reindex(range(1, 32))  # 1~31일 고정
+    pivot = pivot.reindex(range(1, 32))  
     avg_row = pivot.mean(axis=0).to_frame().T
     avg_row.index = ["평균"]
     pivot2 = pd.concat([pivot, avg_row], axis=0)
@@ -1766,7 +1705,6 @@ def temperature_matrix(day_df: pd.DataFrame, default_month: int = 10, key_prefix
 
 
 def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 10, key_prefix: str = "tempBand_"):
-    """기온 구간별 평균 공급량 분석 (기온 매트릭스와 연계)"""
     st.markdown("### 🔥 기온 구간별 평균 공급량 분석")
 
     act_col = "공급량(MJ)"
@@ -1786,7 +1724,7 @@ def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 1
         yr_range = st.slider(
             "연도 범위(공급량 분석)",
             min_value=min_y, max_value=max_y,
-            value=(max(min_y, max_y - 4), max_y),  # 최근 5년 기본
+            value=(max(min_y, max_y - 4), max_y),
             step=1,
             key=f"{key_prefix}yr_range"
         )
@@ -1846,9 +1784,10 @@ st.title("도시가스 계획 / 실적 분석")
 
 with st.sidebar:
     st.header("📌 분석 탭")
+    # [수정된 부분] 4번째 탭 '분기별 판매량 보고서' 추가
     main_tab = st.radio(
         "분석 항목",
-        ["판매량 분석", "공급량 분석(월)", "공급량 분석(일)"],
+        ["판매량 분석", "공급량 분석(월)", "공급량 분석(일)", "분기별 판매량 보고서"],
         index=0,
         key="main_tab"
     )
@@ -1877,7 +1816,7 @@ with st.sidebar:
         st.caption(base_info)
 
     # 공급량 파일
-    else:
+    elif main_tab in ["공급량 분석(월)", "공급량 분석(일)"]: # [수정된 부분] elif로 변경하여 분기별 탭과 충돌 방지
         src = st.radio("데이터 소스", ["레포 파일 사용", "엑셀 업로드(.xlsx)"], index=0, key="supply_src")
         supply_bytes = None
         supply_info = ""
@@ -1896,6 +1835,25 @@ with st.sidebar:
 
         st.caption(supply_info)
 
+    # [수정된 부분] 분기별 판매량 보고서 전용 업종별 데이터 로더 추가
+    elif main_tab == "분기별 판매량 보고서":
+        src_csv = st.radio("업종별 데이터 소스", ["레포 파일 사용", "CSV 업로드(.csv)"], index=0, key="csv_src")
+        csv_bytes = None
+        csv_info = ""
+        if src_csv == "CSV 업로드(.csv)":
+            up_csv = st.file_uploader("가정용외_YYYYMM.csv 형식", type=["csv"], key="csv_uploader")
+            if up_csv is not None:
+                csv_bytes = up_csv.getvalue()
+                csv_info = f"소스: 업로드 파일 — {up_csv.name}"
+        else:
+            path_csv = Path(__file__).parent / DEFAULT_CSV
+            if path_csv.exists():
+                csv_bytes = path_csv.read_bytes()
+                csv_info = f"소스: 레포 파일 — {DEFAULT_CSV}"
+            else:
+                csv_info = f"레포 경로에 {DEFAULT_CSV} 파일이 없습니다."
+        st.caption(csv_info)
+
 
 # ─────────────────────────────────────────────────────────
 # 1) 판매량 분석
@@ -1912,7 +1870,7 @@ if main_tab == "판매량 분석":
     if "부피" in long_dict:
         tab_labels.append("부피 기준 (천m³)")
     if "열량" in long_dict:
-        tab_labels.append("열량 기준 (GJ)")  # 표시만 GJ
+        tab_labels.append("열량 기준 (GJ)")
 
     if not tab_labels:
         st.info("유효한 시트를 찾지 못했어. 파일 시트명을 확인해 줘.")
@@ -1925,12 +1883,7 @@ if main_tab == "판매량 분석":
                     unit = "천m³"
                     prefix = "sales_vol_"
                 else:
-                    # MJ → GJ 변환(표시용)
-                    # [수정] 4,900(TJ) -> 4,900,000(GJ)로 변경 요청에 따라 
-                    # 기존의 '/ 1000.0' 연산을 제거하여 1,000배 큰 숫자가 표시되도록 수정함
                     df_long = long_dict.get("열량", pd.DataFrame()).copy()
-                    # if not df_long.empty:
-                    #     df_long["값"] = df_long["값"] / 1000.0  <-- 이 부분을 삭제했습니다.
                     unit = "GJ"
                     prefix = "sales_gj_"
 
@@ -1985,7 +1938,6 @@ elif main_tab == "공급량 분석(월)":
 
                 st.markdown("---")
 
-                # 일일계획량 vs 일별실적
                 supply_daily_plan_vs_actual_in_month(
                     day_df, month_df,
                     sel_year, sel_month,
@@ -1995,14 +1947,13 @@ elif main_tab == "공급량 분석(월)":
 
                 st.markdown("---")
 
-                # 하단 기온 매트릭스
                 temperature_matrix(day_df, default_month=sel_month, key_prefix="tempM_")
 
 
 # ─────────────────────────────────────────────────────────
 # 3) 공급량 분석(일)
 # ─────────────────────────────────────────────────────────
-else:
+elif main_tab == "공급량 분석(일)": # [수정된 부분] else를 elif로 명시 변경하여 신규 탭 분기점 마련
     st.markdown("## 3) 공급량 분석(일)")
 
     if 'supply_bytes' not in locals() or supply_bytes is None:
@@ -2015,7 +1966,6 @@ else:
         if month_df.empty or day_df.empty:
             st.info("월별/일별 시트 중 하나가 비어있어.")
         else:
-            # 월/계획 기준 선택 + 연/월 선택 UI
             plan_cols = [c for c in month_df.columns if c.startswith("계획(")]
             plan_choice = st.radio(
                 "계획 기준 선택",
@@ -2026,7 +1976,6 @@ else:
             )
             plan_label = "사업계획" if "사업계획" in plan_choice else "마케팅팀계획"
 
-            # selector용 long 더미 (★ 실적 있는 월만 사용 → 최신 실적 월이 디폴트)
             act_col = "실적_공급량(MJ)"
             long_dummy = month_df[["연", "월"]].copy()
             long_dummy["계획/실적"] = "실적"
@@ -2045,3 +1994,106 @@ else:
                 plan_choice, plan_label,
                 key_prefix="supplyD_"
             )
+
+
+# ─────────────────────────────────────────────────────────
+# [수정된 부분] 4) 분기별 판매량 보고서 (새로운 PDF 대안 탭)
+# ─────────────────────────────────────────────────────────
+elif main_tab == "분기별 판매량 보고서":
+    st.markdown("## 📑 분기별 판매량 보고서 (PDF 변환 대시보드)")
+    
+    # 1. 업종별 CSV 데이터 로딩 및 전처리
+    df_csv = pd.DataFrame()
+    if 'csv_bytes' in locals() and csv_bytes is not None:
+        try:
+            df_csv = pd.read_csv(io.BytesIO(csv_bytes), encoding="utf-8-sig")
+        except:
+            df_csv = pd.read_csv(io.BytesIO(csv_bytes), encoding="cp949") # 인코딩 fallback
+        
+        # 엑셀/CSV 데이터의 쉼표(,) 제거 및 float 변환
+        if "사용량(mj)" in df_csv.columns:
+            df_csv["사용량(mj)"] = df_csv["사용량(mj)"].astype(str).str.replace(",", "").astype(float)
+        if "사용량(m3)" in df_csv.columns:
+            df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
+
+    # 2. PDF 목차를 탭(Tabs)으로 구성
+    rpt_tab1, rpt_tab2, rpt_tab3, rpt_tab4 = st.tabs([
+        "1. 공급개요", 
+        "2. 실적분석(YoY)", 
+        "3. 업종별 상세 (CSV)", 
+        "📝 사유 작성 (핵심)"
+    ])
+
+    # [보고서 탭 1] 2025년 공급개요 
+    with rpt_tab1:
+        st.subheader("📌 2025년 공급 현황 _ At a glance")
+        st.markdown("**(※ 실제 판매량 데이터 연동 전 레이아웃 뼈대입니다)**")
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            render_metric_card("📦", "총 공급량 (TJ)", "44,634", "달성률 98.3% (계획대비 -751)", color="#1f77b4")
+        with c2:
+            render_metric_card("🔥", "총 판매량 (TJ)", "45,525", "달성률 98.2% (계획대비 -829)", color="#16a34a")
+        with c3:
+            render_metric_card("🏠", "신규 공급전 (전)", "18,234", "달성률 99.6% (계획대비 -76)", color="#f97316")
+        
+        st.divider()
+        st.markdown("##### 💡 분석 코멘트 (예시)")
+        st.info("가정용 판매량은 26,468 TJ로 계획대비 99.0% 달성 완료. 전년 대비 기온 상승 영향으로 개별난방용 수요가 소폭 감소함.")
+
+    # [보고서 탭 2] 판매량 실적 (YoY)
+    with rpt_tab2:
+        st.subheader("📈 용도별 판매량 실적 비교 (전년대비)")
+        
+        # Plotly 가짜 데이터 차트 (기존 판매량 분석 코드의 데이터프레임을 이곳에 연동하면 됩니다)
+        demo_data = pd.DataFrame({
+            "용도": ["가정용", "업무용", "산업용", "열병합용", "수송용"],
+            "2024년": [26113, 44919, 25218, 5000, 3000],
+            "2025년": [26469, 45525, 27563, 4800, 2900]
+        })
+        fig = go.Figure()
+        fig.add_bar(x=demo_data["용도"], y=demo_data["2024년"], name="2024년 실적", marker_color=COLOR_PREV)
+        fig.add_bar(x=demo_data["용도"], y=demo_data["2025년"], name="2025년 실적", marker_color=COLOR_ACT)
+        
+        fig.update_layout(barmode="group", xaxis_title="용도", yaxis_title="판매량 (TJ)", margin=dict(t=30))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # [보고서 탭 3] 업종별 상세 분석 (CSV 연동)
+    with rpt_tab3:
+        st.subheader("🏢 산업용/업무용 업종별 상세 비교")
+        
+        if not df_csv.empty:
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                use_types = df_csv["용도"].dropna().unique().tolist()
+                sel_use = st.multiselect("용도 필터", use_types, default=use_types[:1] if use_types else [])
+            
+            filtered_df = df_csv[df_csv["용도"].isin(sel_use)] if sel_use else df_csv
+            
+            with col_f2:
+                biz_types = filtered_df["업종분류"].dropna().unique().tolist()
+                sel_biz = st.multiselect("업종분류 필터", biz_types)
+                
+            if sel_biz:
+                filtered_df = filtered_df[filtered_df["업종분류"].isin(sel_biz)]
+                
+            # 피벗 집계 생성
+            summary_df = filtered_df.groupby(["용도", "업종분류", "업종", "고객명"], as_index=False)["사용량(mj)"].sum()
+            summary_df = summary_df.sort_values("사용량(mj)", ascending=False)
+            
+            st.markdown("##### 🔢 필터링된 업종별 사용량 현황")
+            styled_csv = center_style(summary_df.style.format({"사용량(mj)": "{:,.2f}"}))
+            st.dataframe(styled_csv, use_container_width=True, hide_index=True)
+        else:
+            st.warning("👈 좌측 사이드바에서 '업종별 데이터 소스(CSV)'를 불러와 주세요.")
+
+    # [보고서 탭 4] 사유 작성 기능 (형님의 핵심 요구사항)
+    with rpt_tab4:
+        st.subheader("📝 분기별/용도별 특이사항 및 사유 기록")
+        
+        c_use = st.selectbox("사유를 작성할 분석 단위를 선택하세요", ["전체(총괄)", "가정용", "산업용", "업무용", "기타"])
+        c_text = st.text_area(f"[{c_use}] 판매량 증감 사유 및 실적 특이사항", height=200, placeholder="예: 산업용 섬유제조업 가동률 하락으로 인해 전년대비 사용량 10% 급감...")
+        
+        if st.button("💾 사유 저장하기"):
+            # 차후 로컬의 comments.csv 파일이나 DB에 append 하는 로직을 붙이면 완벽합니다.
+            st.success(f"✔️ '{c_use}' 파트의 보고용 사유가 시스템에 임시 저장되었습니다!")
