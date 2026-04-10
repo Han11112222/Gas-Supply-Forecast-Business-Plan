@@ -1832,7 +1832,7 @@ with st.sidebar:
 
         st.caption(supply_info)
 
-    # 분기별 판매량 보고서 (두 개의 데이터를 모두 받아야 함)
+    # 분기별 판매량 보고서
     elif main_tab == "분기별 판매량 보고서":
         st.subheader("1. 판매량 데이터 (필수)")
         src_sales = st.radio("판매량 데이터 소스", ["레포 파일 사용", "엑셀 업로드(.xlsx)"], index=0, key="rpt_sales_src")
@@ -2042,16 +2042,28 @@ elif main_tab == "분기별 판매량 보고서":
         if "사용량(m3)" in df_csv.columns:
             df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
 
-    # --- 1. 보고서 기준 일자 (연도, 분기 선택) ---
-    st.markdown("#### 1. 보고서 기준 일자")
+    # --- 1. 보고서 기준 일자 (연도, 분기 자동 세팅) ---
+    st.markdown("#### 📅 1. 보고서 기준 일자")
+    
+    # 최신 데이터 역산을 통한 Default 값 지정 로직
+    years_available = [2024, 2025, 2026]
+    default_y_index = len(years_available) - 1
+    default_q_index = 3 # 기본은 4Q
+    
+    if not df_long_rpt.empty:
+        years_available = sorted(df_long_rpt["연"].unique().tolist())
+        actual_data = df_long_rpt[df_long_rpt["계획/실적"] == "실적"]
+        if not actual_data.empty:
+            max_year = actual_data["연"].max()
+            max_month = actual_data[actual_data["연"] == max_year]["월"].max()
+            default_y_index = years_available.index(max_year) if max_year in years_available else len(years_available) - 1
+            default_q_index = int((max_month - 1) // 3) # 1~3월(0), 4~6월(1), 7~9월(2), 10~12월(3)
+    
     c_y, c_q, c_empty = st.columns([1, 1, 2])
     with c_y:
-        years_available = [2024, 2025, 2026]
-        if not df_long_rpt.empty:
-            years_available = sorted(df_long_rpt["연"].unique().tolist())
-        sel_year_rpt = st.selectbox("기준 연도", years_available, index=len(years_available)-1 if years_available else 0)
+        sel_year_rpt = st.selectbox("기준 연도", years_available, index=default_y_index)
     with c_q:
-        sel_quarter = st.selectbox("기준 분기", ["1Q (1~3월)", "2Q (1~6월 누적)", "3Q (1~9월 누적)", "4Q (1~12월 누적)"], index=3)
+        sel_quarter = st.selectbox("기준 분기", ["1Q (1~3월)", "2Q (1~6월 누적)", "3Q (1~9월 누적)", "4Q (1~12월 누적)"], index=default_q_index)
     
     # 분기 선택에 따른 누적 월 계산
     max_month = int(sel_quarter[0]) * 3 
@@ -2059,13 +2071,13 @@ elif main_tab == "분기별 판매량 보고서":
     st.markdown("<hr style='margin: 10px 0 30px 0;'>", unsafe_allow_html=True)
 
     # --- 2. At a Glance ---
-    st.markdown("#### 2. At a Glance")
-    st.text_area("분기 핵심 요약", height=120, placeholder="예: 선택 분기 누적 총 판매량은 OO TJ로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", key="rpt_at_a_glance")
+    st.markdown("#### 💡 2. At a Glance")
+    st.text_area("분기 핵심 요약", height=120, placeholder=f"예: {sel_year_rpt}년 {sel_quarter[:2]} 누적 총 판매량은 OO TJ로 계획대비 O% 달성. 주요 특이사항은... (자유롭게 입력하세요)", key="rpt_at_a_glance")
     
     st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
     # --- 3. 전체 판매량 표 정리 & One Page Review ---
-    st.markdown("#### 3. 전체 판매량 요약 및 주요 증감 원인 (One Page Review)")
+    st.markdown("#### 📊 3. 전체 판매량 요약 및 주요 증감 원인 (One Page Review)")
     if not df_long_rpt.empty:
         # 선택한 연도 및 분기(누적) 기준 데이터 집계
         df_base = df_long_rpt[(df_long_rpt["연"].isin([sel_year_rpt, sel_year_rpt-1])) & (df_long_rpt["월"] <= max_month)]
@@ -2103,9 +2115,9 @@ elif main_tab == "분기별 판매량 보고서":
 
     st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-    # --- 4, 5, 6. 용도별 판매량 분석 (월별 추이 꺾은선 + 코멘트) ---
+    # --- 4, 5, 6. 용도별 판매량 분석 (월별 추이 막대그래프 + 코멘트) ---
     def render_usage_trend_report(usage_name, section_num):
-        st.markdown(f"#### {section_num}. 용도별 판매량 분석 : {usage_name}")
+        st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
         
         if df_long_rpt.empty:
             st.info("판매량 데이터가 없습니다.")
@@ -2118,12 +2130,21 @@ elif main_tab == "분기별 판매량 보고서":
             
             months_list = list(range(1, max_month + 1))
             
+            # 꺾은선(Scatter)에서 막대(Bar)로 변경
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=months_list, y=[p_curr_plan.get(m, 0) for m in months_list], mode='lines+markers', name=f'{sel_year_rpt}년 계획', line=dict(dash='dash', color=COLOR_PLAN)))
-            fig.add_trace(go.Scatter(x=months_list, y=[p_curr_act.get(m, 0) for m in months_list], mode='lines+markers', name=f'{sel_year_rpt}년 실적', line=dict(color=COLOR_ACT, width=3)))
-            fig.add_trace(go.Scatter(x=months_list, y=[p_prev_act.get(m, 0) for m in months_list], mode='lines+markers', name=f'{sel_year_rpt-1}년 실적', line=dict(color=COLOR_PREV)))
+            fig.add_trace(go.Bar(x=months_list, y=[p_curr_plan.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 계획', marker_color=COLOR_PLAN))
+            fig.add_trace(go.Bar(x=months_list, y=[p_curr_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt}년 실적', marker_color=COLOR_ACT))
+            fig.add_trace(go.Bar(x=months_list, y=[p_prev_act.get(m, 0) for m in months_list], name=f'{sel_year_rpt-1}년 실적', marker_color=COLOR_PREV))
             
-            fig.update_layout(xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title="판매량(GJ)", margin=dict(t=20, b=10, l=10, r=10), height=300, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            fig.update_layout(
+                barmode='group', 
+                xaxis=dict(tickmode='linear', tick0=1, dtick=1), 
+                xaxis_title="월", 
+                yaxis_title="판매량(GJ)", 
+                margin=dict(t=20, b=10, l=10, r=10), 
+                height=350, 
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
             st.plotly_chart(fig, use_container_width=True)
             
         st.text_area(f"{usage_name} 세부 코멘트", height=100, placeholder=f"{usage_name}의 월별 편차 원인 및 특이사항을 기록하세요.", key=f"rpt_comment_{usage_name}")
@@ -2136,38 +2157,58 @@ elif main_tab == "분기별 판매량 보고서":
     st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
     # --- 7, 8. 별첨 (업종별 비교표 & Top 30) ---
-    st.markdown("#### 7~8. 별첨 (업종별 상세 현황)")
+    st.markdown("#### 📎 7~8. 별첨 (업종별 상세 현황)")
     
     if df_csv.empty:
         st.warning("⚠️ 좌측 사이드바 하단 '업종별 데이터 소스'에서 가정용외 CSV 파일을 업로드하면 별첨 상세 리스트가 표시됩니다.")
     else:
         def render_attachment_report(usage_label, section_num):
-            st.markdown(f"##### {section_num}. 별첨 ({usage_label})")
+            st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
             
-            # 용도 필터링 (CSV 데이터 내 해당 문자열이 포함된 데이터 추출)
+            # 용도 필터링
             df_sub = df_csv[df_csv["용도"].astype(str).str.contains(usage_label, na=False)]
             
             if df_sub.empty:
                 st.info(f"업로드된 CSV 내에 '{usage_label}' 용도 데이터가 존재하지 않습니다.")
                 return
+            
+            # 전체 사용량 계산 (Top 30 비중 계산용)
+            total_usage_sub = df_sub["사용량(mj)"].sum()
                 
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown(f"**■ {usage_label} 업종별 비교표**")
-                if "업종분류" in df_sub.columns:
-                    grp_ind = df_sub.groupby("업종분류", as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False)
+                st.markdown(f"**■ 🏢 {usage_label} 세부 업종별 비교표**")
+                # '업종분류' 대신 상세 '업종' 컬럼 사용
+                if "업종" in df_sub.columns:
+                    grp_ind = df_sub.groupby("업종", as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False)
                     st.dataframe(center_style(grp_ind.style.format({"사용량(mj)": "{:,.0f}"})), use_container_width=True, hide_index=True)
                 else:
-                    st.error("데이터에 '업종분류' 컬럼이 없습니다.")
+                    st.error("데이터에 '업종' 컬럼이 없습니다.")
                     
             with c2:
-                st.markdown(f"**■ {usage_label} Top 30 업체 List**")
-                if "고객명" in df_sub.columns and "업종분류" in df_sub.columns:
-                    grp_top = df_sub.groupby(["고객명", "업종분류"], as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False).head(30)
-                    grp_top.insert(0, "순위", range(1, len(grp_top)+1))
+                st.markdown(f"**■ 🏆 {usage_label} Top 30 업체 List**")
+                if "고객명" in df_sub.columns and "업종" in df_sub.columns:
+                    grp_top = df_sub.groupby(["고객명", "업종"], as_index=False)["사용량(mj)"].sum().sort_values("사용량(mj)", ascending=False).head(30)
+                    
+                    # Top 30 소계 및 비율 계산
+                    top30_sum = grp_top["사용량(mj)"].sum()
+                    top30_ratio = (top30_sum / total_usage_sub * 100) if total_usage_sub > 0 else 0
+                    
+                    # 소계 행 데이터프레임에 추가
+                    subtotal_row = pd.DataFrame([{
+                        "고객명": "💡 소계 (Top 30)", 
+                        "업종": f"전체대비 {top30_ratio:.1f}%", 
+                        "사용량(mj)": top30_sum
+                    }])
+                    grp_top = pd.concat([grp_top, subtotal_row], ignore_index=True)
+                    
+                    # 순위 매기기 (소계 행에는 순위 표시 안함 '-')
+                    ranks = list(range(1, len(grp_top))) + ["-"]
+                    grp_top.insert(0, "순위", ranks)
+                    
                     st.dataframe(center_style(grp_top.style.format({"사용량(mj)": "{:,.0f}"})), use_container_width=True, hide_index=True)
                 else:
-                    st.error("데이터에 '고객명' 또는 '업종분류' 컬럼이 없습니다.")
+                    st.error("데이터에 '고객명' 또는 '업종' 컬럼이 없습니다.")
             st.markdown("<br>", unsafe_allow_html=True)
 
         render_attachment_report("산업용", 7)
