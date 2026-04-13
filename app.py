@@ -2130,9 +2130,9 @@ elif main_tab == "분기별 판매량 보고서":
         
     if not df_csv.empty:
         if "사용량(mj)" in df_csv.columns:
-            df_csv["사용량(mj)"] = df_csv["사용량(mj)"].astype(str).str.replace(",", "").astype(float)
+            df_csv["사용량(mj)"] = pd.to_numeric(df_csv["사용량(mj)"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
         if "사용량(m3)" in df_csv.columns:
-            df_csv["사용량(m3)"] = df_csv["사용량(m3)"].astype(str).str.replace(",", "").astype(float)
+            df_csv["사용량(m3)"] = pd.to_numeric(df_csv["사용량(m3)"].astype(str).str.replace(",", ""), errors="coerce").fillna(0)
             
     comments_db = load_comments_db()
             
@@ -2173,15 +2173,19 @@ elif main_tab == "분기별 판매량 보고서":
             if not df_csv.empty:
                 df_csv["날짜_파싱"] = pd.NaT
                 
-                for date_column in ["검침적용일자", "매출년월", "청구년월", "상품계약일자"]:
+                for date_column in ["검침적용일자", "매출년월", "청구년월", "상품계약일자", "년월", "기준년월"]:
                     if date_column in df_csv.columns:
-                        mask = df_csv["날짜_파싱"].isna()
-                        if mask.any():
-                            df_csv.loc[mask, "날짜_파싱"] = pd.to_datetime(df_csv.loc[mask, date_column], format="%b-%y", errors="coerce")
+                        mask1 = df_csv["날짜_파싱"].isna()
+                        if mask1.any():
+                            df_csv.loc[mask1, "날짜_파싱"] = pd.to_datetime(df_csv.loc[mask1, date_column], format="%b-%y", errors="coerce")
                         
                         mask2 = df_csv["날짜_파싱"].isna()
                         if mask2.any():
-                            df_csv.loc[mask2, "날짜_파싱"] = pd.to_datetime(df_csv.loc[mask2, date_column], errors="coerce")
+                            df_csv.loc[mask2, "날짜_파싱"] = pd.to_datetime(df_csv.loc[mask2, date_column], format="%Y%m", errors="coerce")
+                            
+                        mask3 = df_csv["날짜_파싱"].isna()
+                        if mask3.any():
+                            df_csv.loc[mask3, "날짜_파싱"] = pd.to_datetime(df_csv.loc[mask3, date_column], errors="coerce")
 
                 df_csv["연_csv"] = df_csv["날짜_파싱"].dt.year.fillna(years_available[default_y_index])
                 df_csv["월_csv"] = df_csv["날짜_파싱"].dt.month.fillna(1)
@@ -2344,15 +2348,15 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                         
-                    # 산업용, 업무용인 경우 하단에 세부 업종별 그래프 추가 (엑셀 100% 정합성 반영)
+                    # [수정] 엑셀의 용도 그룹핑과 동일한 로직 적용을 위한 CSV 필터링 강화
                     if usage_name in ["산업용", "업무용"] and not df_csv.empty and val_col in df_csv.columns:
                         st.markdown(f"**■ 세부 업종별 판매량 비교 (당해연도 vs 전년도)**")
                         
                         if usage_name == "산업용":
-                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.strip() == "산업용") & (df_csv["월_csv"] <= max_month)].copy()
+                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.contains("산업용", na=False)) & (df_csv["월_csv"] <= max_month)].copy()
                             grp_col = "업종"
                         else: 
-                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.strip().isin(["업무난방용", "냉난방용(업무)", "냉방용", "주한미군"])) & (df_csv["월_csv"] <= max_month)].copy()
+                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.contains("업무난방용|냉난방용|냉방용|주한미군", na=False, regex=True)) & (df_csv["월_csv"] <= max_month)].copy()
                             if "업종분류" in df_sub_filtered.columns:
                                 df_sub_filtered["업종"] = df_sub_filtered["업종분류"]
                             grp_col = "업종"
@@ -2380,6 +2384,7 @@ elif main_tab == "분기별 판매량 보고서":
                             else:
                                 ind_comp_plot = ind_comp.copy()
                                 
+                            # [수정] 가장 큰 변화폭을 가진 업종을 붉은색으로 강조
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
                             
                             colors_act = [COLOR_ACT] * len(ind_comp_plot)
@@ -2413,10 +2418,11 @@ elif main_tab == "분기별 판매량 보고서":
                 def render_attachment_report(usage_label, section_num, key_sfx):
                     st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
                     
+                    # [수정] 엑셀의 용도 그룹핑과 동일한 로직 적용을 위한 CSV 필터링 강화
                     if usage_label == "산업용":
-                        df_sub = df_csv[df_csv["상품명"].astype(str).str.strip() == "산업용"].copy()
+                        df_sub = df_csv[df_csv["상품명"].astype(str).str.contains("산업용", na=False)].copy()
                     else: 
-                        df_sub = df_csv[df_csv["상품명"].astype(str).str.strip().isin(["업무난방용", "냉난방용(업무)", "냉방용", "주한미군"])].copy()
+                        df_sub = df_csv[df_csv["상품명"].astype(str).str.contains("업무난방용|냉난방용|냉방용|주한미군", na=False, regex=True)].copy()
                         if "업종분류" in df_sub.columns:
                             df_sub["업종"] = df_sub["업종분류"]
                     
