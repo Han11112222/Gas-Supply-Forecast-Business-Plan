@@ -2272,7 +2272,7 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 4, 5, 6. 용도별 판매량 분석 + 업종별 비교 그래프(CSV 연동) ---
+            # --- 4, 5, 6. 용도별 판매량 분석 ---
             def render_usage_trend_report(usage_name, section_num, key_sfx, db_key):
                 
                 if df_long_rpt.empty:
@@ -2344,15 +2344,15 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                         
-                    # [수정] 업종별 비교 그래프 추가 및 붉은색 강조 로직
+                    # 산업용, 업무용인 경우 하단에 세부 업종별 그래프 추가 (엑셀 100% 정합성 반영)
                     if usage_name in ["산업용", "업무용"] and not df_csv.empty and val_col in df_csv.columns:
                         st.markdown(f"**■ 세부 업종별 판매량 비교 (당해연도 vs 전년도)**")
                         
                         if usage_name == "산업용":
-                            df_sub_filtered = df_csv[(df_csv["상품명"] == "산업용") & (df_csv["월_csv"] <= max_month)].copy()
+                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.strip() == "산업용") & (df_csv["월_csv"] <= max_month)].copy()
                             grp_col = "업종"
                         else: 
-                            df_sub_filtered = df_csv[(df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])) & (df_csv["월_csv"] <= max_month)].copy()
+                            df_sub_filtered = df_csv[(df_csv["상품명"].astype(str).str.strip().isin(["업무난방용", "냉난방용(업무)", "냉방용", "주한미군"])) & (df_csv["월_csv"] <= max_month)].copy()
                             if "업종분류" in df_sub_filtered.columns:
                                 df_sub_filtered["업종"] = df_sub_filtered["업종분류"]
                             grp_col = "업종"
@@ -2364,7 +2364,6 @@ elif main_tab == "분기별 판매량 보고서":
                             ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
                             ind_comp["증감절대값"] = abs(ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"])
                             
-                            # 상위 10개 추출 로직
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
                             if len(ind_comp) > 10:
@@ -2381,13 +2380,11 @@ elif main_tab == "분기별 판매량 보고서":
                             else:
                                 ind_comp_plot = ind_comp.copy()
                                 
-                            # 가장 큰 변화폭(증감 절대값)을 가진 업종 찾기
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
                             
-                            # 붉은색 하이라이트 색상 배열 생성
                             colors_act = [COLOR_ACT] * len(ind_comp_plot)
                             if pd.notna(max_diff_idx):
-                                colors_act[max_diff_idx] = "#d32f2f" # 강렬한 붉은색
+                                colors_act[max_diff_idx] = "#d32f2f" 
                                 
                             fig_ind = go.Figure()
                             fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt}년"], name=f'{sel_year_rpt}년', marker_color=colors_act, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt}년"]], textposition='auto', textfont=dict(size=11)))
@@ -2417,9 +2414,9 @@ elif main_tab == "분기별 판매량 보고서":
                     st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
                     
                     if usage_label == "산업용":
-                        df_sub = df_csv[df_csv["상품명"] == "산업용"].copy()
+                        df_sub = df_csv[df_csv["상품명"].astype(str).str.strip() == "산업용"].copy()
                     else: 
-                        df_sub = df_csv[df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])].copy()
+                        df_sub = df_csv[df_csv["상품명"].astype(str).str.strip().isin(["업무난방용", "냉난방용(업무)", "냉방용", "주한미군"])].copy()
                         if "업종분류" in df_sub.columns:
                             df_sub["업종"] = df_sub["업종분류"]
                     
