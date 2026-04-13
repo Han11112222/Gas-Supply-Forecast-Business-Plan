@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -57,8 +58,10 @@ def render_comment_section(title, db_key, curr_db, comments_db, height, placehol
     saved_text = curr_db.get(db_key, None)
     
     if saved_text is not None:
-        # [수정] 줄바꿈(\n)을 HTML <br> 태그로 변환하여 그대로 보여주도록 변경
-        formatted_text = saved_text.replace('\n', '<br>')
+        url_pattern = re.compile(r'(https?://[^\s]+)')
+        linked_text = url_pattern.sub(r'<a href="\1" target="_blank" style="color: #2563eb; text-decoration: underline; font-weight: bold;">\1</a>', saved_text)
+        
+        formatted_text = linked_text.replace('\n', '<br>')
         st.markdown(
             f"""
             <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 4px solid #1f77b4; padding: 15px; border-radius: 4px; color: #1e40af; font-size: 14.5px; line-height: 1.6; margin-bottom: 10px;">
@@ -2486,7 +2489,7 @@ elif main_tab == "분기별 판매량 보고서":
                             top30_ratio = (top30_sum / total_usage_curr * 100) if total_usage_curr > 0 else 0
                             
                             subtotal_row = pd.DataFrame([{
-                                "고객명": "💡 소계", 
+                                "고객명": "💡 소계 (Top 30)", 
                                 "업종": f"전체대비 {top30_ratio:.1f}%", 
                                 val_col: top30_sum
                             }])
@@ -2505,7 +2508,7 @@ elif main_tab == "분기별 판매량 보고서":
                             st.markdown("<br>", unsafe_allow_html=True)
                             
                             st.markdown(f"**🔍 {usage_label} 개별 고객 상세 차트**")
-                            top_customers = [c for c in grp_top["고객명"] if c != "💡 소계"]
+                            top_customers = [c for c in grp_top["고객명"] if c != "💡 소계 (Top 30)"]
                             sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}{key_sfx}")
 
                             if sel_cust != "선택 안함":
