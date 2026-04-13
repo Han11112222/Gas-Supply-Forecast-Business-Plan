@@ -2173,7 +2173,9 @@ elif main_tab == "분기별 판매량 보고서":
             if not df_csv.empty:
                 df_csv["날짜_파싱"] = pd.NaT
                 
-                for date_column in ["검침적용일자", "매출년월", "청구년월", "상품계약일자", "년월", "기준년월"]:
+                # [수정] 총량 불일치의 원인이었던 '검침적용일자', '상품계약일자' 등 엉뚱한 과거 날짜 배제
+                # 사용자가 요청한 '청구년월'을 최우선으로 매출 기준 년월만 엄격하게 스캔
+                for date_column in ["청구년월", "매출년월", "년월", "기준년월"]:
                     if date_column in df_csv.columns:
                         mask1 = df_csv["날짜_파싱"].isna()
                         if mask1.any():
@@ -2348,7 +2350,7 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                         
-                    # [수정] 엑셀의 용도 그룹핑과 동일한 로직 적용을 위한 CSV 필터링 강화
+                    # 산업용, 업무용인 경우 하단에 세부 업종별 그래프 추가 (엑셀 100% 정합성 반영)
                     if usage_name in ["산업용", "업무용"] and not df_csv.empty and val_col in df_csv.columns:
                         st.markdown(f"**■ 세부 업종별 판매량 비교 (당해연도 vs 전년도)**")
                         
@@ -2384,7 +2386,6 @@ elif main_tab == "분기별 판매량 보고서":
                             else:
                                 ind_comp_plot = ind_comp.copy()
                                 
-                            # [수정] 가장 큰 변화폭을 가진 업종을 붉은색으로 강조
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
                             
                             colors_act = [COLOR_ACT] * len(ind_comp_plot)
