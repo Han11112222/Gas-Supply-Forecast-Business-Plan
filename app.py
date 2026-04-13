@@ -2269,8 +2269,9 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- [수정] 4, 5, 6. 용도별 판매량 분석 + 업종별 비교 그래프(CSV 연동) ---
+            # --- 4, 5, 6. 용도별 판매량 분석 ---
             def render_usage_trend_report(usage_name, section_num, key_sfx, db_key):
+                
                 if df_long_rpt.empty:
                     st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
                     st.info("판매량 데이터가 없습니다.")
@@ -2340,23 +2341,24 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                         
-                    # [수정] 산업용, 업무용인 경우 하단에 세부 업종별 그래프 추가 (엑셀 100% 정합성 반영)
                     if usage_name in ["산업용", "업무용"] and not df_csv.empty and val_col in df_csv.columns:
                         st.markdown(f"**■ 세부 업종별 판매량 비교 (당해연도 vs 전년도)**")
                         
-                        # 엑셀과 동일한 분류 기준 적용
                         if usage_name == "산업용":
-                            df_sub_filtered = df_csv[(df_csv["상품명"] == "산업용") & (df_csv["월_csv"] <= max_month)]
-                        else: # 업무용
-                            df_sub_filtered = df_csv[(df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])) & (df_csv["월_csv"] <= max_month)]
+                            df_sub_filtered = df_csv[(df_csv["상품명"] == "산업용") & (df_csv["월_csv"] <= max_month)].copy()
+                            grp_col = "업종"
+                        else: 
+                            df_sub_filtered = df_csv[(df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])) & (df_csv["월_csv"] <= max_month)].copy()
+                            if "업종분류" in df_sub_filtered.columns:
+                                df_sub_filtered["업종"] = df_sub_filtered["업종분류"]
+                            grp_col = "업종"
                             
-                        if not df_sub_filtered.empty and "업종" in df_sub_filtered.columns:
-                            curr_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt].groupby("업종", as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt}년"})
-                            prev_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt - 1].groupby("업종", as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt-1}년"})
+                        if not df_sub_filtered.empty and grp_col in df_sub_filtered.columns:
+                            curr_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt].groupby(grp_col, as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt}년"})
+                            prev_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt - 1].groupby(grp_col, as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt-1}년"})
                             
-                            ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on="업종", how="outer").fillna(0)
+                            ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
                             
-                            # 상위 10개 추출 로직
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
                             if len(ind_comp) > 10:
@@ -2364,7 +2366,7 @@ elif main_tab == "분기별 판매량 보고서":
                                 others_df = ind_comp.iloc[10:].copy()
                                 
                                 others_row = pd.DataFrame([{
-                                    "업종": "기타", 
+                                    grp_col: "기타", 
                                     f"{sel_year_rpt}년": others_df[f"{sel_year_rpt}년"].sum(), 
                                     f"{sel_year_rpt-1}년": others_df[f"{sel_year_rpt-1}년"].sum()
                                 }])
@@ -2373,10 +2375,10 @@ elif main_tab == "분기별 판매량 보고서":
                                 ind_comp_plot = ind_comp.copy()
                                 
                             fig_ind = go.Figure()
-                            fig_ind.add_trace(go.Bar(x=ind_comp_plot["업종"], y=ind_comp_plot[f"{sel_year_rpt}년"], name=f'{sel_year_rpt}년', marker_color=COLOR_ACT, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt}년"]], textposition='auto', textfont=dict(size=11)))
-                            fig_ind.add_trace(go.Bar(x=ind_comp_plot["업종"], y=ind_comp_plot[f"{sel_year_rpt-1}년"], name=f'{sel_year_rpt-1}년', marker_color=COLOR_PREV, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt-1}년"]], textposition='auto', textfont=dict(size=11)))
+                            fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt}년"], name=f'{sel_year_rpt}년', marker_color=COLOR_ACT, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt}년"]], textposition='auto', textfont=dict(size=11)))
+                            fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt-1}년"], name=f'{sel_year_rpt-1}년', marker_color=COLOR_PREV, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt-1}년"]], textposition='auto', textfont=dict(size=11)))
                             
-                            fig_ind.update_layout(barmode='group', xaxis_title="", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                            fig_ind.update_layout(barmode='group', xaxis_title="", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                             st.plotly_chart(fig_ind, use_container_width=True)
                         else:
                             st.info("해당 용도의 세부 업종 데이터가 없습니다.")
@@ -2399,11 +2401,12 @@ elif main_tab == "분기별 판매량 보고서":
                 def render_attachment_report(usage_label, section_num, key_sfx):
                     st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
                     
-                    # [수정] 엑셀과 100% 동일한 분류 기준 적용
                     if usage_label == "산업용":
-                        df_sub = df_csv[df_csv["상품명"] == "산업용"]
+                        df_sub = df_csv[df_csv["상품명"] == "산업용"].copy()
                     else: # 업무용
-                        df_sub = df_csv[df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])]
+                        df_sub = df_csv[df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])].copy()
+                        if "업종분류" in df_sub.columns:
+                            df_sub["업종"] = df_sub["업종분류"]
                     
                     if df_sub.empty:
                         st.info(f"업로드된 CSV 내에 '{usage_label}' 용도 데이터가 존재하지 않습니다.")
@@ -2521,14 +2524,12 @@ elif main_tab == "분기별 판매량 보고서":
                             
                         st.markdown("<hr style='border-top: 1px dashed #ccc; margin: 30px 0;'>", unsafe_allow_html=True)
                             
-                        # [수정] 50개 등 사용자가 원하는 모든 리스트를 볼 수 있도록 수정
                         st.markdown(f"**■ 🏆 {usage_label} 전체 고객 업체 List (당해연도 판매량 기준)**")
                         
                         if "고객명" in df_sub_filtered.columns and "업종" in df_sub_filtered.columns:
                             curr_year_data = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt]
                             total_usage_curr = curr_year_data[val_col].sum()
                             
-                            # 전체 고객 리스트 (제한 없음)
                             grp_top = curr_year_data.groupby(["고객명", "업종"], as_index=False)[val_col].sum().sort_values(val_col, ascending=False)
                             
                             top30_sum = grp_top[val_col].sum()
@@ -2553,7 +2554,6 @@ elif main_tab == "분기별 판매량 보고서":
                             
                             st.markdown("<br>", unsafe_allow_html=True)
                             
-                            # [수정] 드롭다운에서 모든 고객을 검색/선택 가능
                             st.markdown(f"**🔍 {usage_label} 개별 고객 상세 차트**")
                             top_customers = [c for c in grp_top["고객명"] if c != "💡 총계"]
                             sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}{key_sfx}")
