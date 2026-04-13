@@ -1936,7 +1936,10 @@ with st.sidebar:
                     try:
                         df_list.append(pd.read_csv(io.BytesIO(f.getvalue()), encoding="utf-8-sig"))
                     except:
-                        df_list.append(pd.read_csv(io.BytesIO(f.getvalue()), encoding="cp949"))
+                        try:
+                            df_list.append(pd.read_csv(io.BytesIO(f.getvalue()), encoding="cp949"))
+                        except:
+                            pass
                 if df_list:
                     st.session_state['merged_csv_df'] = pd.concat(df_list, ignore_index=True)
                 csv_info = f"소스: 업로드 파일 {len(up_csvs)}개 병합 완료"
@@ -2269,7 +2272,7 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 4, 5, 6. 용도별 판매량 분석 ---
+            # --- 4, 5, 6. 용도별 판매량 분석 + 업종별 비교 그래프(CSV 연동) ---
             def render_usage_trend_report(usage_name, section_num, key_sfx, db_key):
                 
                 if df_long_rpt.empty:
@@ -2341,6 +2344,7 @@ elif main_tab == "분기별 판매량 보고서":
                         fig_m.update_layout(barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), xaxis_title="월", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                         st.plotly_chart(fig_m, use_container_width=True)
                         
+                    # [수정] 업종별 비교 그래프 추가 및 붉은색 강조 로직
                     if usage_name in ["산업용", "업무용"] and not df_csv.empty and val_col in df_csv.columns:
                         st.markdown(f"**■ 세부 업종별 판매량 비교 (당해연도 vs 전년도)**")
                         
@@ -2358,7 +2362,9 @@ elif main_tab == "분기별 판매량 보고서":
                             prev_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt - 1].groupby(grp_col, as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt-1}년"})
                             
                             ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
+                            ind_comp["증감절대값"] = abs(ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"])
                             
+                            # 상위 10개 추출 로직
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
                             if len(ind_comp) > 10:
@@ -2368,14 +2374,23 @@ elif main_tab == "분기별 판매량 보고서":
                                 others_row = pd.DataFrame([{
                                     grp_col: "기타", 
                                     f"{sel_year_rpt}년": others_df[f"{sel_year_rpt}년"].sum(), 
-                                    f"{sel_year_rpt-1}년": others_df[f"{sel_year_rpt-1}년"].sum()
+                                    f"{sel_year_rpt-1}년": others_df[f"{sel_year_rpt-1}년"].sum(),
+                                    "증감절대값": abs(others_df[f"{sel_year_rpt}년"].sum() - others_df[f"{sel_year_rpt-1}년"].sum())
                                 }])
                                 ind_comp_plot = pd.concat([top10_df, others_row], ignore_index=True)
                             else:
                                 ind_comp_plot = ind_comp.copy()
                                 
+                            # 가장 큰 변화폭(증감 절대값)을 가진 업종 찾기
+                            max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
+                            
+                            # 붉은색 하이라이트 색상 배열 생성
+                            colors_act = [COLOR_ACT] * len(ind_comp_plot)
+                            if pd.notna(max_diff_idx):
+                                colors_act[max_diff_idx] = "#d32f2f" # 강렬한 붉은색
+                                
                             fig_ind = go.Figure()
-                            fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt}년"], name=f'{sel_year_rpt}년', marker_color=COLOR_ACT, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt}년"]], textposition='auto', textfont=dict(size=11)))
+                            fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt}년"], name=f'{sel_year_rpt}년', marker_color=colors_act, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt}년"]], textposition='auto', textfont=dict(size=11)))
                             fig_ind.add_trace(go.Bar(x=ind_comp_plot[grp_col], y=ind_comp_plot[f"{sel_year_rpt-1}년"], name=f'{sel_year_rpt-1}년', marker_color=COLOR_PREV, text=[f"{v:,.0f}" if v>0 else "" for v in ind_comp_plot[f"{sel_year_rpt-1}년"]], textposition='auto', textfont=dict(size=11)))
                             
                             fig_ind.update_layout(barmode='group', xaxis_title="", yaxis_title=f"판매량({unit_str})", margin=dict(t=10, b=10, l=10, r=10), height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -2403,7 +2418,7 @@ elif main_tab == "분기별 판매량 보고서":
                     
                     if usage_label == "산업용":
                         df_sub = df_csv[df_csv["상품명"] == "산업용"].copy()
-                    else: # 업무용
+                    else: 
                         df_sub = df_csv[df_csv["상품명"].isin(["업무난방용", "냉방용", "주한미군"])].copy()
                         if "업종분류" in df_sub.columns:
                             df_sub["업종"] = df_sub["업종분류"]
