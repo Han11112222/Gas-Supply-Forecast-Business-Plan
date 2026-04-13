@@ -57,10 +57,16 @@ def render_comment_section(title, db_key, curr_db, comments_db, height, placehol
     saved_text = curr_db.get(db_key, None)
     
     if saved_text is not None:
-        # 이미 저장된 내용이 있을 경우 -> 읽기 전용 모드로 표시
-        st.info(saved_text)
+        # [수정] 줄바꿈(\n)을 HTML <br> 태그로 변환하여 그대로 보여주도록 변경
+        formatted_text = saved_text.replace('\n', '<br>')
+        st.markdown(
+            f"""
+            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 4px solid #1f77b4; padding: 15px; border-radius: 4px; color: #1e40af; font-size: 14.5px; line-height: 1.6; margin-bottom: 10px;">
+                {formatted_text}
+            </div>
+            """, unsafe_allow_html=True
+        )
         
-        # 비밀번호를 입력해야 수정/삭제가 가능한 Expander
         with st.expander("🔒 코멘트 수정/삭제 (비밀번호 필요)"):
             pw = st.text_input("비밀번호(PW) 입력", type="password", key=f"pw_{widget_key}")
             if pw == "1234":
@@ -79,7 +85,6 @@ def render_comment_section(title, db_key, curr_db, comments_db, height, placehol
             elif pw != "":
                 st.error("❌ 비밀번호가 일치하지 않습니다.")
     else:
-        # 저장된 내용이 없을 경우 -> 신규 입력 모드
         input_text = st.text_area("내용 입력", height=height, placeholder=placeholder, key=f"ta_{widget_key}", label_visibility="collapsed")
         if st.button("💾 이 코멘트 저장", key=f"save_{widget_key}"):
             curr_db[db_key] = input_text
@@ -157,7 +162,6 @@ def center_style(styler):
         [dict(selector="th", props=[("text-align", "center")])]
     )
     return styler
-
 
 def highlight_subtotal(s):
     """표의 '💡 소계', '💡 총계', '💡 합계' 행을 연한 회색으로 하이라이트."""
@@ -1411,7 +1415,7 @@ def supply_daily_plan_vs_actual_in_month(day_df: pd.DataFrame, month_df: pd.Data
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("##### 🔢 일별 편차 요약")
-    show = this_df[["일자", act_col, "편차(실적-일계획)_GJ"]].copy()
+    show = this_df[["일자", act_col, "편차_GJ"]].copy()
     show.columns = ["일자", "일별실적(GJ)", "편차(실적-일계획)(GJ)"]
     show["일별실적(GJ)"] = show["일별실적(GJ)"].apply(lambda v: v / 1000.0)
     styled = center_style(
