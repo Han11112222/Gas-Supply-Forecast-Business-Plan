@@ -28,7 +28,7 @@ def set_korean_font():
 
 
 set_korean_font()
-st.set_page_config(page_title="도시가스 판매량 분석 보고서", layout="wide")
+st.set_page_config(page_title="도시가스 판매량/공급량 분석 보고서", layout="wide")
 
 DEFAULT_SALES_XLSX = "판매량(계획_실적).xlsx"
 DEFAULT_SUPPLY_XLSX = "공급량(계획_실적).xlsx"
@@ -1848,7 +1848,7 @@ def temperature_supply_band_section(day_df: pd.DataFrame, default_month: int = 1
 # ─────────────────────────────────────────────────────────
 # 메인 레이아웃 (좌측탭 구성)
 # ─────────────────────────────────────────────────────────
-st.title("📊 판매량 분석 보고서")
+st.title("📊 판매량/공급량 분석 보고서")
 
 with st.sidebar:
     st.header("📌 분석 탭")
@@ -1967,7 +1967,7 @@ with st.sidebar:
 # 1) 판매량 분석
 # ─────────────────────────────────────────────────────────
 if main_tab == "판매량 분석":
-    st.markdown("## 1) 판매량 계획 / 실적 분석")
+    st.markdown("## 📦 판매량 계획/실적 분석")
 
     long_dict: Dict[str, pd.DataFrame] = {}
     if 'excel_bytes' in locals() and excel_bytes is not None:
@@ -2014,7 +2014,7 @@ if main_tab == "판매량 분석":
 # 2) 공급량 분석(월)
 # ─────────────────────────────────────────────────────────
 elif main_tab == "공급량 분석(월)":
-    st.markdown("## 2) 공급량 분석(월)")
+    st.markdown("## 🔵 공급량 분석(월)")
 
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
@@ -2137,7 +2137,7 @@ elif main_tab == "공급량 분석(월)":
 # 3) 공급량 분석(일)
 # ─────────────────────────────────────────────────────────
 elif main_tab == "공급량 분석(일)":
-    st.markdown("## 3) 공급량 분석(일)")
+    st.markdown("## 📅 공급량 분석(일)")
 
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
