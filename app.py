@@ -2144,6 +2144,18 @@ elif main_tab == "분기별 판매량 보고서":
         df_csv = st.session_state['merged_csv_df'].copy()
         
     if not df_csv.empty:
+        # 컬럼명 공백 제거로 강건하게 처리
+        df_csv.columns = df_csv.columns.str.strip()
+        # 대소문자 변형된 컬럼명 통일 (예: 사용량(MJ) → 사용량(mj))
+        col_map = {}
+        for col in df_csv.columns:
+            col_clean = col.strip()
+            if col_clean.upper() == "사용량(MJ)".upper() and col_clean != "사용량(mj)":
+                col_map[col_clean] = "사용량(mj)"
+            if col_clean.upper() in ["사용량(M3)".upper(), "사용량(M³)".upper()] and col_clean != "사용량(m3)":
+                col_map[col_clean] = "사용량(m3)"
+        if col_map:
+            df_csv = df_csv.rename(columns=col_map)
         if "사용량(mj)" in df_csv.columns:
             df_csv["사용량(mj)"] = df_csv["사용량(mj)"].apply(clean_korean_finance_number_local)
         if "사용량(m3)" in df_csv.columns:
@@ -2194,8 +2206,18 @@ elif main_tab == "분기별 판매량 보고서":
                 # GJ탭: 사용량(mj) / 1000 → val_작업
                 # 부피탭: 사용량(m3) / 1000 → val_작업
                 # 두 탭 모두 val_작업에 저장하여 df_long_rpt와 동일 단위로 맞춤
+                # csv_raw_col 매핑: 대소문자·공백 차이 허용
+                actual_col = None
                 if csv_raw_col in df_csv_tab.columns:
-                    df_csv_tab["val_작업"] = df_csv_tab[csv_raw_col] / 1000.0
+                    actual_col = csv_raw_col
+                else:
+                    # 컬럼명 대소문자 무시 탐색
+                    for c in df_csv_tab.columns:
+                        if c.strip().lower() == csv_raw_col.lower():
+                            actual_col = c
+                            break
+                if actual_col:
+                    df_csv_tab["val_작업"] = pd.to_numeric(df_csv_tab[actual_col], errors="coerce").fillna(0.0) / 1000.0
                 else:
                     df_csv_tab["val_작업"] = 0.0
 
@@ -2412,13 +2434,20 @@ elif main_tab == "분기별 판매량 보고서":
                             
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
+                            csv_total_curr = ind_comp[f"{sel_year_rpt}년"].sum()
+                            csv_total_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
+                            # CSV 전체 합계 → 엑셀 실적 기준으로 스케일 보정 비율 계산
+                            # (CSV 단위와 df_long_rpt 단위가 완전히 일치하지 않을 수 있으므로)
+                            scale_c = (sum_act / csv_total_curr) if csv_total_curr > 0 else 1.0
+                            scale_p = (sum_prev / csv_total_prev) if csv_total_prev > 0 else 1.0
+                            ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * scale_c
+                            ind_comp[f"{sel_year_rpt-1}년"] = ind_comp[f"{sel_year_rpt-1}년"] * scale_p
+
                             if len(ind_comp) > 10:
                                 top10_df = ind_comp.iloc[:10].copy()
-                                # 기타 = 엑셀 전체 실적 - Top10 CSV 합계
-                                # (CSV 전체 합계와 엑셀 실적의 차이를 '기타'로 흡수)
-                                o_c = max(sum_act - top10_df[f"{sel_year_rpt}년"].sum(), 0)
-                                o_p = max(sum_prev - top10_df[f"{sel_year_rpt-1}년"].sum(), 0)
-                                
+                                others_df = ind_comp.iloc[10:].copy()
+                                o_c = max(others_df[f"{sel_year_rpt}년"].sum(), 0)
+                                o_p = max(others_df[f"{sel_year_rpt-1}년"].sum(), 0)
                                 others_row = pd.DataFrame([{
                                     grp_col: "기타", 
                                     f"{sel_year_rpt}년": o_c, 
@@ -2426,16 +2455,7 @@ elif main_tab == "분기별 판매량 보고서":
                                 }])
                                 ind_comp_plot = pd.concat([top10_df, others_row], ignore_index=True)
                             else:
-                                # 10개 이하: 업종 합계가 엑셀 실적과 다를 수 있으므로 스케일 보정
                                 ind_comp_plot = ind_comp.copy()
-                                csv_sum_curr = ind_comp_plot[f"{sel_year_rpt}년"].sum()
-                                csv_sum_prev = ind_comp_plot[f"{sel_year_rpt-1}년"].sum()
-                                if csv_sum_curr > 0 and sum_act > 0:
-                                    scale_c = sum_act / csv_sum_curr
-                                    ind_comp_plot[f"{sel_year_rpt}년"] = ind_comp_plot[f"{sel_year_rpt}년"] * scale_c
-                                if csv_sum_prev > 0 and sum_prev > 0:
-                                    scale_p = sum_prev / csv_sum_prev
-                                    ind_comp_plot[f"{sel_year_rpt-1}년"] = ind_comp_plot[f"{sel_year_rpt-1}년"] * scale_p
                                     
                             ind_comp_plot["증감절대값"] = abs(ind_comp_plot[f"{sel_year_rpt}년"] - ind_comp_plot[f"{sel_year_rpt-1}년"])
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
@@ -2507,14 +2527,21 @@ elif main_tab == "분기별 판매량 보고서":
                             ind_comp = ind_comp.sort_values("temp_diff", ascending=False).reset_index(drop=True)
                             ind_comp = ind_comp.drop(columns=["temp_diff"])
                         
+                        csv_total_curr = ind_comp[f"{sel_year_rpt}년"].sum()
+                        csv_total_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
+                        # CSV 합계를 엑셀 실적 기준으로 스케일 보정
+                        scale_c = (tgt_c / csv_total_curr) if csv_total_curr > 0 else 1.0
+                        scale_p = (tgt_p / csv_total_prev) if csv_total_prev > 0 else 1.0
+                        ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * scale_c
+                        ind_comp[f"{sel_year_rpt-1}년"] = ind_comp[f"{sel_year_rpt-1}년"] * scale_p
+
                         if len(ind_comp) > 10:
                             top10_df = ind_comp.iloc[:10].copy()
-                            # 기타 = 엑셀 전체 실적 - Top10 CSV 합계
-                            o_c = max(tgt_c - top10_df[f"{sel_year_rpt}년"].sum(), 0)
-                            o_p = max(tgt_p - top10_df[f"{sel_year_rpt-1}년"].sum(), 0)
+                            others_df = ind_comp.iloc[10:].copy()
+                            o_c = max(others_df[f"{sel_year_rpt}년"].sum(), 0)
+                            o_p = max(others_df[f"{sel_year_rpt-1}년"].sum(), 0)
                             o_diff = o_c - o_p
                             o_rate = (o_c / o_p * 100) if o_p > 0 else 0
-                            
                             others_row = pd.DataFrame([{
                                 "업종": "기타", 
                                 f"{sel_year_rpt}년": o_c, 
@@ -2524,14 +2551,7 @@ elif main_tab == "분기별 판매량 보고서":
                             }])
                             ind_comp = pd.concat([top10_df, others_row], ignore_index=True)
                         else:
-                            # 10개 이하: 스케일 보정으로 엑셀 합계에 맞춤
-                            if len(ind_comp) > 0:
-                                csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
-                                csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
-                                if csv_sum_curr > 0 and tgt_c > 0:
-                                    ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * (tgt_c / csv_sum_curr)
-                                if csv_sum_prev > 0 and tgt_p > 0:
-                                    ind_comp[f"{sel_year_rpt-1}년"] = ind_comp[f"{sel_year_rpt-1}년"] * (tgt_p / csv_sum_prev)
+                            pass  # 10개 이하는 스케일 보정 이미 완료
                         
                         ind_comp["증감"] = ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"]
                         ind_comp["대비(%)"] = np.where(ind_comp[f"{sel_year_rpt-1}년"] > 0, (ind_comp[f"{sel_year_rpt}년"] / ind_comp[f"{sel_year_rpt-1}년"]) * 100, 0)
