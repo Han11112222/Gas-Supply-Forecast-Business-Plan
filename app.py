@@ -2158,12 +2158,14 @@ elif main_tab == "분기별 판매량 보고서":
             if idx == 0:
                 df_long_rpt = long_dict_rpt.get("열량", pd.DataFrame())
                 unit_str = "GJ"
-                val_col = "사용량(mj)"
+                # ★ 수정1: GJ탭 - 사용량(mj)을 /1000하여 val_작업 컬럼에 저장
+                csv_raw_col = "사용량(mj)"
                 key_sfx = "_gj"
             else:
                 df_long_rpt = long_dict_rpt.get("부피", pd.DataFrame())
                 unit_str = "천m³"
-                val_col = "사용량(m3)"
+                # ★ 수정1: 부피탭 - 사용량(m3)을 /1000하여 val_작업 컬럼에 저장
+                csv_raw_col = "사용량(m3)"
                 key_sfx = "_vol"
 
             st.markdown("#### 📅 보고서 기준 일자") 
@@ -2184,12 +2186,21 @@ elif main_tab == "분기별 판매량 보고서":
                     
                     if default_q_index < 0: default_q_index = 0
                     if default_q_index > 3: default_q_index = 3
-                    
+
+            # ★ 수정1: df_csv_tab 처리 - val_작업 컬럼에 단위 변환값 저장
             df_csv_tab = df_csv.copy()
             
             if not df_csv_tab.empty:
-                if unit_str == "GJ" and "사용량(mj)" in df_csv_tab.columns:
-                    df_csv_tab["사용량(mj)"] = df_csv_tab["사용량(mj)"] / 1000.0
+                # GJ탭: 사용량(mj) / 1000 → val_작업
+                # 부피탭: 사용량(m3) / 1000 → val_작업
+                # 두 탭 모두 val_작업에 저장하여 df_long_rpt와 동일 단위로 맞춤
+                if csv_raw_col in df_csv_tab.columns:
+                    df_csv_tab["val_작업"] = df_csv_tab[csv_raw_col] / 1000.0
+                else:
+                    df_csv_tab["val_작업"] = 0.0
+
+                # val_col은 항상 val_작업 사용
+                val_col = "val_작업"
                     
                 df_csv_tab["날짜_파싱"] = pd.NaT
                 
@@ -2217,6 +2228,8 @@ elif main_tab == "분기별 판매량 보고서":
 
                 df_csv_tab["연_csv"] = df_csv_tab["날짜_파싱"].dt.year
                 df_csv_tab["월_csv"] = df_csv_tab["날짜_파싱"].dt.month
+            else:
+                val_col = "val_작업"
             
             c_y, c_q, c_empty = st.columns([1, 1, 2])
             with c_y:
@@ -2397,8 +2410,12 @@ elif main_tab == "분기별 판매량 보고서":
                             
                             ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
                             
-                            diff_c = ind_comp[f"{sel_year_rpt}년"].sum() - sum_act
-                            diff_p = ind_comp[f"{sel_year_rpt-1}년"].sum() - sum_prev
+                            # ★ 수정2: diff_c/diff_p - val_col(천m³ 또는 GJ 단위)과 sum_act(df_long_rpt 단위) 비교
+                            # 두 값 모두 동일 단위(GJ 또는 천m³)이므로 올바른 보정값 계산 가능
+                            csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
+                            csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
+                            diff_c = csv_sum_curr - sum_act
+                            diff_p = csv_sum_prev - sum_prev
                             
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
@@ -2418,8 +2435,10 @@ elif main_tab == "분기별 판매량 보고서":
                             else:
                                 ind_comp_plot = ind_comp.copy()
                                 if len(ind_comp_plot) > 0:
-                                    ind_comp_plot.loc[len(ind_comp_plot)-1, f"{sel_year_rpt}년"] -= diff_c
-                                    ind_comp_plot.loc[len(ind_comp_plot)-1, f"{sel_year_rpt-1}년"] -= diff_p
+                                    # ★ iloc 기반 인덱싱으로 SettingWithCopyWarning 방지
+                                    last_idx = len(ind_comp_plot) - 1
+                                    ind_comp_plot.iloc[last_idx, ind_comp_plot.columns.get_loc(f"{sel_year_rpt}년")] -= diff_c
+                                    ind_comp_plot.iloc[last_idx, ind_comp_plot.columns.get_loc(f"{sel_year_rpt-1}년")] -= diff_p
                                     
                             ind_comp_plot["증감절대값"] = abs(ind_comp_plot[f"{sel_year_rpt}년"] - ind_comp_plot[f"{sel_year_rpt-1}년"])
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
@@ -2450,7 +2469,7 @@ elif main_tab == "분기별 판매량 보고서":
             st.markdown("#### 📎 6~7. 별첨 (업종별 상세 현황)")
             
             if df_csv_tab.empty or val_col not in df_csv_tab.columns:
-                st.warning(f"⚠️ 업종별 상세 데이터를 보려면 '{unit_str}' 단위에 맞는 데이터({val_col} 컬럼 포함)를 CSV로 다중 업로드해주세요.")
+                st.warning(f"⚠️ 업종별 상세 데이터를 보려면 '{unit_str}' 단위에 맞는 데이터({csv_raw_col} 컬럼 포함)를 CSV로 다중 업로드해주세요.")
             else:
                 def render_attachment_report(usage_label, section_num, key_sfx):
                     st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
@@ -2482,8 +2501,11 @@ elif main_tab == "분기별 판매량 보고서":
                         
                         ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on="업종", how="outer").fillna(0)
                         
-                        diff_c = ind_comp[f"{sel_year_rpt}년"].sum() - tgt_c
-                        diff_p = ind_comp[f"{sel_year_rpt-1}년"].sum() - tgt_p
+                        # ★ 수정2: diff_c/diff_p - 동일 단위(GJ 또는 천m³)로 보정값 계산
+                        csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
+                        csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
+                        diff_c = csv_sum_curr - tgt_c
+                        diff_p = csv_sum_prev - tgt_p
                         
                         sort_option = st.radio("표 정렬 기준", ["당해연도 판매량 순", "전년대비 증감량 순"], horizontal=True, key=f"sort_{usage_label}{key_sfx}")
                         
@@ -2513,8 +2535,10 @@ elif main_tab == "분기별 판매량 보고서":
                             ind_comp = pd.concat([top10_df, others_row], ignore_index=True)
                         else:
                             if len(ind_comp) > 0:
-                                ind_comp.loc[len(ind_comp)-1, f"{sel_year_rpt}년"] -= diff_c
-                                ind_comp.loc[len(ind_comp)-1, f"{sel_year_rpt-1}년"] -= diff_p
+                                # ★ iloc 기반 인덱싱으로 SettingWithCopyWarning 방지
+                                last_idx = len(ind_comp) - 1
+                                ind_comp.iloc[last_idx, ind_comp.columns.get_loc(f"{sel_year_rpt}년")] -= diff_c
+                                ind_comp.iloc[last_idx, ind_comp.columns.get_loc(f"{sel_year_rpt-1}년")] -= diff_p
                         
                         ind_comp["증감"] = ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"]
                         ind_comp["대비(%)"] = np.where(ind_comp[f"{sel_year_rpt-1}년"] > 0, (ind_comp[f"{sel_year_rpt}년"] / ind_comp[f"{sel_year_rpt-1}년"]) * 100, 0)
@@ -2620,7 +2644,7 @@ elif main_tab == "분기별 판매량 보고서":
                                         grp_all_cust.loc[idx, f"{sel_year_rpt}년"] = 0
                             elif d_c < 0:
                                 if len(grp_all_cust) > 0:
-                                    grp_all_cust.loc[len(grp_all_cust)-1, f"{sel_year_rpt}년"] -= d_c
+                                    grp_all_cust.iloc[-1, grp_all_cust.columns.get_loc(f"{sel_year_rpt}년")] -= d_c
                                     
                             d_p = diff_p_top
                             if d_p > 0:
@@ -2634,7 +2658,7 @@ elif main_tab == "분기별 판매량 보고서":
                                         grp_all_cust.loc[idx, f"{sel_year_rpt-1}년"] = 0
                             elif d_p < 0:
                                 if len(grp_all_cust) > 0:
-                                    grp_all_cust.loc[len(grp_all_cust)-1, f"{sel_year_rpt-1}년"] -= d_p
+                                    grp_all_cust.iloc[-1, grp_all_cust.columns.get_loc(f"{sel_year_rpt-1}년")] -= d_p
                             
                             grp_all_cust = grp_all_cust[(grp_all_cust[f"{sel_year_rpt}년"] > 0) | (grp_all_cust[f"{sel_year_rpt-1}년"] > 0)].reset_index(drop=True)
                             grp_all_cust = grp_all_cust.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
@@ -2679,8 +2703,9 @@ elif main_tab == "분기별 판매량 보고서":
                             st.markdown("<br>", unsafe_allow_html=True)
                             
                             st.markdown(f"**🔍 {usage_label} 개별 고객 상세 차트**")
-                            top_customers = [c for c in grp_top_30["고객명"]]
-                            sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + top_customers, key=f"sel_cust_{usage_label}{key_sfx}")
+                            # ★ 수정3: 고객 드롭다운을 grp_top_30이 아닌 grp_all_cust 전체에서 제공
+                            all_customers = grp_all_cust["고객명"].tolist()
+                            sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + all_customers, key=f"sel_cust_{usage_label}{key_sfx}")
 
                             if sel_cust != "선택 안함":
                                 c_data = df_sub[df_sub["고객명"] == sel_cust]
