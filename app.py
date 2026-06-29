@@ -1112,7 +1112,7 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
 
 # ─────────────────────────────────────────────────────────
-# 공급량 전용 로더/정리
+# 공급량 전용 로더/정리 (구글 스프레드시트 연동 추가)
 # ─────────────────────────────────────────────────────────
 def load_supply_sheets(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame]:
     xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
@@ -1148,6 +1148,44 @@ def clean_supply_day_df(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["일자"])
     return df
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_supply_data_with_gsheets(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """기존 엑셀파일의 계획과 구글 스프레드시트의 일별 실적을 병합하여 반환"""
+    # 1. 엑셀에서 기존 월별계획 시트 불러오기
+    month_df, _ = load_supply_sheets(excel_bytes)
+    month_df = clean_supply_month_df(month_df)
+    
+    # 2. 구글 스프레드시트에서 실적(일별) 가져오기
+    try:
+        sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+        day_df = pd.read_csv(sheet_url)
+    except Exception as e:
+        st.error(f"구글 스프레드시트 로드 실패: {e}")
+        day_df = pd.DataFrame()
+        
+    day_df = clean_supply_day_df(day_df)
+    
+    # 3. 월별 실적 집계(합산/평균) 및 기존 month_df에 병합
+    if not day_df.empty and not month_df.empty:
+        day_df_temp = day_df.copy()
+        day_df_temp["_연"] = day_df_temp["일자"].dt.year
+        day_df_temp["_월"] = day_df_temp["일자"].dt.month
+        
+        # 일별 데이터를 월별로 합산(공급량) 및 평균(기온)
+        agg_df = day_df_temp.groupby(["_연", "_월"], as_index=False).agg(
+            {"공급량(MJ)": "sum", "공급량(M3)": "sum", "평균기온(℃)": "mean"}
+        ).rename(columns={
+            "_연": "연", "_월": "월",
+            "공급량(MJ)": "실적_공급량(MJ)", "공급량(M3)": "실적_공급량(M3)"
+        })
+        
+        # 엑셀 기반 기존 실적 데이터를 제거하고, 스프레드시트에서 계산된 실적으로 교체
+        drop_cols = [c for c in ["실적_공급량(MJ)", "실적_공급량(M3)", "평균기온(℃)"] if c in month_df.columns]
+        month_df = month_df.drop(columns=drop_cols)
+        month_df = pd.merge(month_df, agg_df, on=["연", "월"], how="left")
+        
+    return month_df, day_df
 
 
 # ─────────────────────────────────────────────────────────
@@ -2011,9 +2049,7 @@ elif main_tab == "공급량 분석(월)":
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
-        month_df, day_df = load_supply_sheets(supply_bytes)
-        month_df = clean_supply_month_df(month_df)
-        day_df = clean_supply_day_df(day_df)
+        month_df, day_df = get_supply_data_with_gsheets(supply_bytes)
 
         if month_df.empty:
             st.info("월별계획_실적 시트가 비어있어.")
@@ -2059,9 +2095,7 @@ elif main_tab == "공급량 분석(일)":
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
-        month_df, day_df = load_supply_sheets(supply_bytes)
-        month_df = clean_supply_month_df(month_df)
-        day_df = clean_supply_day_df(day_df)
+        month_df, day_df = get_supply_data_with_gsheets(supply_bytes)
 
         if month_df.empty or day_df.empty:
             st.info("월별/일별 시트 중 하나가 비어있어.")
