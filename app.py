@@ -1112,7 +1112,7 @@ def half_year_stacked_section(long_df: pd.DataFrame, unit_label: str, key_prefix
 
 
 # ─────────────────────────────────────────────────────────
-# 공급량 전용 로더/정리 (쉼표 및 데이터 전처리 보완)
+# 공급량 전용 로더/정리
 # ─────────────────────────────────────────────────────────
 def load_supply_sheets(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame]:
     xls = pd.ExcelFile(io.BytesIO(excel_bytes), engine="openpyxl")
@@ -1129,13 +1129,9 @@ def clean_supply_month_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop(columns=["Unnamed: 0"])
     df["연"] = pd.to_numeric(df["연"], errors="coerce").astype("Int64")
     df["월"] = pd.to_numeric(df["월"], errors="coerce").astype("Int64")
-    
     num_cols = [c for c in df.columns if c not in ["연", "월"]]
     for c in num_cols:
-        if df[c].dtype == object:
-            df[c] = df[c].astype(str).str.replace(",", "").str.strip()
         df[c] = pd.to_numeric(df[c], errors="coerce")
-        
     df = df.dropna(subset=["연", "월"])
     df["연"] = df["연"].astype(int)
     df["월"] = df["월"].astype(int)
@@ -1146,71 +1142,12 @@ def clean_supply_day_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.copy()
-    
-    if "일자" in df.columns:
-        df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
-        
-    for c in ["공급량(MJ)", "공급량(M3)", "평균기온(℃)", "최저", "최고"]:
+    df["일자"] = pd.to_datetime(df["일자"], errors="coerce")
+    for c in ["공급량(MJ)", "공급량(M3)", "평균기온(℃)"]:
         if c in df.columns:
-            if df[c].dtype == object:
-                # 쉼표(,)가 포함된 문자열 데이터를 숫자로 변환하기 위해 쉼표 제거
-                df[c] = df[c].astype(str).str.replace(",", "").str.strip()
             df[c] = pd.to_numeric(df[c], errors="coerce")
-            
     df = df.dropna(subset=["일자"])
     return df
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_supply_data_with_gsheets(excel_bytes: bytes) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """엑셀 양식의 계획 틀을 기반으로 구글 스프레드시트의 일별 실적 데이터를 월별 병합 및 업데이트"""
-    # 1. 엑셀에서 기본 데이터 정보 로드
-    month_df, _ = load_supply_sheets(excel_bytes)
-    month_df = clean_supply_month_df(month_df)
-    
-    # 2. 구글 스프레드시트 연동 (CSV 다운로드 포맷)
-    try:
-        sheet_url = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
-        day_df = pd.read_csv(sheet_url)
-    except Exception as e:
-        st.error(f"구글 스프레드시트 연동 실패: {e}")
-        day_df = pd.DataFrame()
-        
-    day_df = clean_supply_day_df(day_df)
-    
-    # 3. 일별 실적을 월별 실적으로 집계하여 계획 데이터에 실시간 매칭
-    if not day_df.empty and not month_df.empty:
-        day_df_temp = day_df.copy()
-        day_df_temp["_연"] = day_df_temp["일자"].dt.year
-        day_df_temp["_월"] = day_df_temp["일자"].dt.month
-        
-        # 일별 공급량 실적은 합산(sum), 기온은 평균(mean) 처리
-        agg_df = day_df_temp.groupby(["_연", "_월"], as_index=False).agg(
-            {"공급량(MJ)": "sum", "공급량(M3)": "sum", "평균기온(℃)": "mean"}
-        ).rename(columns={
-            "_연": "연", "_월": "월",
-            "공급량(MJ)": "실적_공급량(MJ)", "공급량(M3)": "실적_공급량(M3)"
-        })
-        
-        agg_df["연"] = agg_df["연"].astype(int)
-        agg_df["월"] = agg_df["월"].astype(int)
-        
-        # 데이터 정합성을 위해 연, 월 기준으로 정렬 및 데이터 매핑 업데이트
-        month_df = month_df.set_index(["연", "월"])
-        agg_df = agg_df.set_index(["연", "월"])
-        
-        # 기존 엑셀 데이터를 보존하면서 스프레드시트에서 새로 갱신된 실적 부분만 덮어쓰기
-        month_df.update(agg_df)
-        
-        # 혹시라도 month_df 계획 틀에 존재하지 않는 새로운 연월 데이터가 스프레드시트에 기입된 경우 자동 추가
-        extra_idx = agg_df.index.difference(month_df.index)
-        if not extra_idx.empty:
-            extra_df = agg_df.loc[extra_idx]
-            month_df = pd.concat([month_df, extra_df])
-            
-        month_df = month_df.reset_index()
-        
-    return month_df, day_df
 
 
 # ─────────────────────────────────────────────────────────
@@ -2074,7 +2011,9 @@ elif main_tab == "공급량 분석(월)":
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
-        month_df, day_df = get_supply_data_with_gsheets(supply_bytes)
+        month_df, day_df = load_supply_sheets(supply_bytes)
+        month_df = clean_supply_month_df(month_df)
+        day_df = clean_supply_day_df(day_df)
 
         if month_df.empty:
             st.info("월별계획_실적 시트가 비어있어.")
@@ -2120,7 +2059,9 @@ elif main_tab == "공급량 분석(일)":
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
     else:
-        month_df, day_df = get_supply_data_with_gsheets(supply_bytes)
+        month_df, day_df = load_supply_sheets(supply_bytes)
+        month_df = clean_supply_month_df(month_df)
+        day_df = clean_supply_day_df(day_df)
 
         if month_df.empty or day_df.empty:
             st.info("월별/일별 시트 중 하나가 비어있어.")
@@ -2373,7 +2314,7 @@ elif main_tab == "분기별 판매량 보고서":
                 else:
                     df_u = df_long_rpt[(df_long_rpt["그룹"] == usage_name) & (df_long_rpt["월"] <= max_month)]
                     
-                    p_curr_plan = df_u[(df_u["연"] == sel_year_rpt) & (df_u["get계획/실적"] == "계획")].groupby("월")["값"].sum()
+                    p_curr_plan = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "계획")].groupby("월")["값"].sum()
                     p_curr_act = df_u[(df_u["연"] == sel_year_rpt) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
                     p_prev_act = df_u[(df_u["연"] == sel_year_rpt-1) & (df_u["계획/실적"] == "실적")].groupby("월")["값"].sum()
                     
@@ -2514,7 +2455,7 @@ elif main_tab == "분기별 판매량 보고서":
                 def render_attachment_report(usage_label, section_num, key_sfx):
                     st.markdown(f"##### 🏭 {section_num}. 별첨 ({usage_label})")
                     
-                    csv_products_att = df_csv_tab["PROP_NAME"].astype(str).str.replace(r"\s+", "", regex=True)
+                    csv_products_att = df_csv_tab["상품명"].astype(str).str.replace(r"\s+", "", regex=True)
                     
                     if usage_label == "산업용":
                         df_sub = df_csv_tab[csv_products_att == "산업용"].copy()
@@ -2749,3 +2690,63 @@ elif main_tab == "분기별 판매량 보고서":
                                 y_prev = c_grp[(c_grp["연_csv"] == sel_year_rpt - 1) & (c_grp["월_csv"] <= max_month)]
                                 
                                 sum_cur_c = y_cur[val_col].sum()
+                                sum_prev_c = y_prev[val_col].sum()
+                                
+                                diff_val = sum_cur_c - sum_prev_c
+                                rate_val = (sum_cur_c / sum_prev_c * 100) if sum_prev_c > 0 else 0
+                                sign_str = "+" if diff_val > 0 else ""
+                                yoy_text = f"전년대비 증감: {sign_str}{diff_val:,.0f} ({rate_val:.1f}%)"
+                                
+                                cc1, cc2 = st.columns([1, 2])
+                                with cc1:
+                                    fig_cust_cum = go.Figure()
+                                    fig_cust_cum.add_trace(go.Bar(x=[f"{sel_year_rpt}년", f"{sel_year_rpt-1}년"], 
+                                                                  y=[sum_cur_c, sum_prev_c],
+                                                                  marker_color=[COLOR_ACT, COLOR_PREV],
+                                                                  text=[f"{sum_cur_c:,.0f}", f"{sum_prev_c:,.0f}"], textposition='auto'))
+                                    
+                                    fig_cust_cum.add_annotation(
+                                        x=0.5, y=1.05, xref="paper", yref="paper",
+                                        text=f"<b>{yoy_text}</b>",
+                                        showarrow=False, font=dict(size=13, color="#d32f2f" if diff_val < 0 else "#1f77b4"),
+                                        bgcolor="#f8f9fa", bordercolor="#d0d7e5", borderwidth=1, borderpad=4
+                                    )
+                                    
+                                    fig_cust_cum.update_layout(title=f"'{sel_cust}' 누적 사용량 ({sel_quarter[:2]})", margin=dict(t=50,b=10,l=10,r=10), height=350)
+                                    st.plotly_chart(fig_cust_cum, use_container_width=True)
+                                    
+                                with cc2:
+                                    fig_cust_mon = go.Figure()
+                                    months_c = list(range(1, max_month + 1))
+                                    
+                                    cur_vals = [y_cur[y_cur['월_csv']==m][val_col].sum() for m in months_c]
+                                    prev_vals = [y_prev[y_prev['월_csv']==m][val_col].sum() for m in months_c]
+                                    
+                                    fig_cust_mon.add_trace(go.Bar(
+                                        x=months_c, y=cur_vals, name=f"{sel_year_rpt}년", marker_color=COLOR_ACT,
+                                        text=[f"{v:,.0f}" if v>0 else "" for v in cur_vals], textposition='auto', textfont=dict(size=11)
+                                    ))
+                                    fig_cust_mon.add_trace(go.Bar(
+                                        x=months_c, y=prev_vals, name=f"{sel_year_rpt-1}년", marker_color=COLOR_PREV,
+                                        text=[f"{v:,.0f}" if v>0 else "" for v in prev_vals], textposition='auto', textfont=dict(size=11)
+                                    ))
+                                    
+                                    fig_cust_mon.update_layout(title=f"'{sel_cust}' 월별 사용량 추이", barmode='group', xaxis=dict(tickmode='linear', tick0=1, dtick=1), margin=dict(t=50,b=10,l=10,r=10), height=350, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                                    st.plotly_chart(fig_cust_mon, use_container_width=True)
+                        else:
+                            st.error("데이터에 '고객명' 또는 '업종' 컬럼이 없습니다.")
+                            
+                    st.markdown("<br><br>", unsafe_allow_html=True)
+
+                render_attachment_report("산업용", 6, key_sfx)
+                render_attachment_report("업무용", 7, key_sfx)
+        
+        # --- 🖨️ PDF 인쇄 기능 ---
+        st.markdown("<hr style='border-top: 2px solid #bbb; margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
+        st.markdown("### 🖨️ 보고서 출력")
+        
+        st.markdown("""
+            <button onclick="window.print()" style="padding: 12px 20px; font-size: 16px; border-radius: 8px; background-color: #1e3a8a; color: white; border: none; cursor: pointer; width: 100%; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                🖨️ 현재 화면 전체를 PDF로 다운로드 (인쇄)
+            </button>
+        """, unsafe_allow_html=True)
