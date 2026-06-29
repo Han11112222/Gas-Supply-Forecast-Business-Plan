@@ -2014,7 +2014,7 @@ if main_tab == "판매량 분석":
 # 2) 공급량 분석(월)
 # ─────────────────────────────────────────────────────────
 elif main_tab == "공급량 분석(월)":
-    st.markdown("## 🔵 공급량 분석(월)")
+    st.markdown("## 📈 공급량 분석(월)")
 
     if 'supply_bytes' not in locals() or supply_bytes is None:
         st.info("공급량 파일을 불러오면 분석이 표시돼.")
