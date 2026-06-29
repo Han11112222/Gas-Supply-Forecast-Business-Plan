@@ -1902,6 +1902,14 @@ with st.sidebar:
 
         st.caption(supply_info)
 
+        # ── 구글 시트 실적 덮어쓰기 옵션 ──────────────────────────
+        st.markdown("---")
+        st.markdown("**📡 일별 실적 구글 시트 연동**")
+        GSHEET_URL = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+        use_gsheet = st.toggle("구글 시트에서 실적 자동 가져오기", value=True, key="use_gsheet_toggle")
+        if use_gsheet:
+            st.caption("일별 공급량(MJ) + 평균기온을 월별 합산해 실적으로 사용합니다.")
+
     # 분기별 판매량 보고서
     elif main_tab == "분기별 판매량 보고서":
         st.subheader("1. 판매량 데이터 (필수)")
@@ -2014,6 +2022,81 @@ elif main_tab == "공급량 분석(월)":
         month_df, day_df = load_supply_sheets(supply_bytes)
         month_df = clean_supply_month_df(month_df)
         day_df = clean_supply_day_df(day_df)
+
+        # ── 구글 시트 실적 덮어쓰기 ──────────────────────────────
+        if locals().get("use_gsheet", False):
+            try:
+                with st.spinner("구글 시트에서 일별 실적을 불러오는 중..."):
+                    gsheet_df = pd.read_csv(GSHEET_URL)
+                    gsheet_df.columns = gsheet_df.columns.str.strip()
+
+                    # 일자 파싱
+                    date_col_g = None
+                    for c in ["일자", "날짜", "date", "Date"]:
+                        if c in gsheet_df.columns:
+                            date_col_g = c
+                            break
+                    if date_col_g is None:
+                        date_col_g = gsheet_df.columns[0]
+                    gsheet_df["일자"] = pd.to_datetime(gsheet_df[date_col_g], errors="coerce")
+                    gsheet_df = gsheet_df.dropna(subset=["일자"])
+                    gsheet_df["연"] = gsheet_df["일자"].dt.year
+                    gsheet_df["월"] = gsheet_df["일자"].dt.month
+
+                    # 공급량(MJ) 컬럼 탐색
+                    mj_col_g = None
+                    for c in gsheet_df.columns:
+                        if "mj" in c.lower() or "공급량" in c:
+                            mj_col_g = c
+                            break
+                    # 평균기온 컬럼 탐색
+                    temp_col_g = None
+                    for c in gsheet_df.columns:
+                        if "기온" in c or "온도" in c or "temp" in c.lower():
+                            temp_col_g = c
+                            break
+
+                    if mj_col_g:
+                        gsheet_df[mj_col_g] = pd.to_numeric(
+                            gsheet_df[mj_col_g].astype(str).str.replace(",", ""), errors="coerce"
+                        )
+                        # 월별 합산 (실적_공급량(MJ))
+                        monthly_act = (
+                            gsheet_df.groupby(["연", "월"], as_index=False)[mj_col_g]
+                            .sum()
+                            .rename(columns={mj_col_g: "실적_공급량(MJ)"})
+                        )
+                        # 평균기온도 월 평균으로 합산
+                        if temp_col_g:
+                            gsheet_df[temp_col_g] = pd.to_numeric(
+                                gsheet_df[temp_col_g].astype(str).str.replace(",", ""), errors="coerce"
+                            )
+                            monthly_temp = (
+                                gsheet_df.groupby(["연", "월"], as_index=False)[temp_col_g]
+                                .mean()
+                                .rename(columns={temp_col_g: "평균기온_월평균(℃)"})
+                            )
+                            monthly_act = pd.merge(monthly_act, monthly_temp, on=["연", "월"], how="left")
+
+                        # month_df의 실적_공급량(MJ) 컬럼을 구글 시트 값으로 교체
+                        if "실적_공급량(MJ)" in month_df.columns:
+                            month_df = month_df.drop(columns=["실적_공급량(MJ)"])
+                        month_df = pd.merge(month_df, monthly_act[["연", "월", "실적_공급량(MJ)"]], on=["연", "월"], how="left")
+
+                        # day_df도 구글 시트 일별 데이터로 교체 (일별 분석 탭에서도 활용)
+                        day_cols = {date_col_g: "일자"}
+                        if mj_col_g and mj_col_g != "일자":
+                            day_cols[mj_col_g] = "공급량(MJ)"
+                        if temp_col_g and temp_col_g != "일자":
+                            day_cols[temp_col_g] = "평균기온(℃)"
+                        gsheet_day = gsheet_df.rename(columns=day_cols)[["일자"] + [v for v in day_cols.values() if v != "일자"]]
+                        day_df = clean_supply_day_df(gsheet_day)
+
+                        st.success(f"✅ 구글 시트 실적 반영 완료 — {len(gsheet_df):,}행 (일별) → 월별 합산 적용")
+                    else:
+                        st.warning("구글 시트에서 공급량(MJ) 컬럼을 찾지 못했습니다. 기존 엑셀 실적을 사용합니다.")
+            except Exception as e:
+                st.warning(f"구글 시트 로드 실패 ({e}). 기존 엑셀 실적을 사용합니다.")
 
         if month_df.empty:
             st.info("월별계획_실적 시트가 비어있어.")
