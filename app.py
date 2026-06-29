@@ -2410,21 +2410,14 @@ elif main_tab == "분기별 판매량 보고서":
                             
                             ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
                             
-                            # ★ 수정2: diff_c/diff_p - val_col(천m³ 또는 GJ 단위)과 sum_act(df_long_rpt 단위) 비교
-                            # 두 값 모두 동일 단위(GJ 또는 천m³)이므로 올바른 보정값 계산 가능
-                            csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
-                            csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
-                            diff_c = csv_sum_curr - sum_act
-                            diff_p = csv_sum_prev - sum_prev
-                            
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
                             if len(ind_comp) > 10:
                                 top10_df = ind_comp.iloc[:10].copy()
-                                others_df = ind_comp.iloc[10:].copy()
-                                
-                                o_c = others_df[f"{sel_year_rpt}년"].sum() - diff_c
-                                o_p = others_df[f"{sel_year_rpt-1}년"].sum() - diff_p
+                                # 기타 = 엑셀 전체 실적 - Top10 CSV 합계
+                                # (CSV 전체 합계와 엑셀 실적의 차이를 '기타'로 흡수)
+                                o_c = max(sum_act - top10_df[f"{sel_year_rpt}년"].sum(), 0)
+                                o_p = max(sum_prev - top10_df[f"{sel_year_rpt-1}년"].sum(), 0)
                                 
                                 others_row = pd.DataFrame([{
                                     grp_col: "기타", 
@@ -2433,12 +2426,16 @@ elif main_tab == "분기별 판매량 보고서":
                                 }])
                                 ind_comp_plot = pd.concat([top10_df, others_row], ignore_index=True)
                             else:
+                                # 10개 이하: 업종 합계가 엑셀 실적과 다를 수 있으므로 스케일 보정
                                 ind_comp_plot = ind_comp.copy()
-                                if len(ind_comp_plot) > 0:
-                                    # ★ iloc 기반 인덱싱으로 SettingWithCopyWarning 방지
-                                    last_idx = len(ind_comp_plot) - 1
-                                    ind_comp_plot.iloc[last_idx, ind_comp_plot.columns.get_loc(f"{sel_year_rpt}년")] -= diff_c
-                                    ind_comp_plot.iloc[last_idx, ind_comp_plot.columns.get_loc(f"{sel_year_rpt-1}년")] -= diff_p
+                                csv_sum_curr = ind_comp_plot[f"{sel_year_rpt}년"].sum()
+                                csv_sum_prev = ind_comp_plot[f"{sel_year_rpt-1}년"].sum()
+                                if csv_sum_curr > 0 and sum_act > 0:
+                                    scale_c = sum_act / csv_sum_curr
+                                    ind_comp_plot[f"{sel_year_rpt}년"] = ind_comp_plot[f"{sel_year_rpt}년"] * scale_c
+                                if csv_sum_prev > 0 and sum_prev > 0:
+                                    scale_p = sum_prev / csv_sum_prev
+                                    ind_comp_plot[f"{sel_year_rpt-1}년"] = ind_comp_plot[f"{sel_year_rpt-1}년"] * scale_p
                                     
                             ind_comp_plot["증감절대값"] = abs(ind_comp_plot[f"{sel_year_rpt}년"] - ind_comp_plot[f"{sel_year_rpt-1}년"])
                             max_diff_idx = ind_comp_plot["증감절대값"].idxmax()
@@ -2501,12 +2498,6 @@ elif main_tab == "분기별 판매량 보고서":
                         
                         ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on="업종", how="outer").fillna(0)
                         
-                        # ★ 수정2: diff_c/diff_p - 동일 단위(GJ 또는 천m³)로 보정값 계산
-                        csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
-                        csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
-                        diff_c = csv_sum_curr - tgt_c
-                        diff_p = csv_sum_prev - tgt_p
-                        
                         sort_option = st.radio("표 정렬 기준", ["당해연도 판매량 순", "전년대비 증감량 순"], horizontal=True, key=f"sort_{usage_label}{key_sfx}")
                         
                         if sort_option == "당해연도 판매량 순":
@@ -2518,10 +2509,9 @@ elif main_tab == "분기별 판매량 보고서":
                         
                         if len(ind_comp) > 10:
                             top10_df = ind_comp.iloc[:10].copy()
-                            others_df = ind_comp.iloc[10:].copy()
-                            
-                            o_c = others_df[f"{sel_year_rpt}년"].sum() - diff_c
-                            o_p = others_df[f"{sel_year_rpt-1}년"].sum() - diff_p
+                            # 기타 = 엑셀 전체 실적 - Top10 CSV 합계
+                            o_c = max(tgt_c - top10_df[f"{sel_year_rpt}년"].sum(), 0)
+                            o_p = max(tgt_p - top10_df[f"{sel_year_rpt-1}년"].sum(), 0)
                             o_diff = o_c - o_p
                             o_rate = (o_c / o_p * 100) if o_p > 0 else 0
                             
@@ -2534,11 +2524,14 @@ elif main_tab == "분기별 판매량 보고서":
                             }])
                             ind_comp = pd.concat([top10_df, others_row], ignore_index=True)
                         else:
+                            # 10개 이하: 스케일 보정으로 엑셀 합계에 맞춤
                             if len(ind_comp) > 0:
-                                # ★ iloc 기반 인덱싱으로 SettingWithCopyWarning 방지
-                                last_idx = len(ind_comp) - 1
-                                ind_comp.iloc[last_idx, ind_comp.columns.get_loc(f"{sel_year_rpt}년")] -= diff_c
-                                ind_comp.iloc[last_idx, ind_comp.columns.get_loc(f"{sel_year_rpt-1}년")] -= diff_p
+                                csv_sum_curr = ind_comp[f"{sel_year_rpt}년"].sum()
+                                csv_sum_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
+                                if csv_sum_curr > 0 and tgt_c > 0:
+                                    ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * (tgt_c / csv_sum_curr)
+                                if csv_sum_prev > 0 and tgt_p > 0:
+                                    ind_comp[f"{sel_year_rpt-1}년"] = ind_comp[f"{sel_year_rpt-1}년"] * (tgt_p / csv_sum_prev)
                         
                         ind_comp["증감"] = ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"]
                         ind_comp["대비(%)"] = np.where(ind_comp[f"{sel_year_rpt-1}년"] > 0, (ind_comp[f"{sel_year_rpt}년"] / ind_comp[f"{sel_year_rpt-1}년"]) * 100, 0)
