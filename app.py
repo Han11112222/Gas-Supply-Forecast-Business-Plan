@@ -859,10 +859,26 @@ def yearly_summary_section(long_df: pd.DataFrame, unit_label: str, key_prefix: s
 
     st.markdown("##### 🔢 기준기간 요약 표")
     pivot_reset = pivot.reset_index()
+
+    # ★수정됨: 소계 행 추가
+    total_plan = pivot_reset["계획"].sum()
+    total_act  = pivot_reset["실적"].sum()
+    total_diff = total_act - total_plan
+    total_rate = (total_act / total_plan * 100.0) if total_plan != 0 else np.nan
+    subtotal_row = pd.DataFrame([{
+        idx_col: "💡 소계",
+        "계획": total_plan,
+        "실적": total_act,
+        "차이(실적-계획)": total_diff,
+        "달성률(%)": total_rate,
+    }])
+    pivot_reset = pd.concat([pivot_reset, subtotal_row], ignore_index=True)
+    # ★수정됨 끝
+
     styled = center_style(
         pivot_reset.style.format(
             {"계획": "{:,.0f}", "실적": "{:,.0f}", "차이(실적-계획)": "{:,.0f}", "달성률(%)": "{:,.1f}"}
-        )
+        ).apply(highlight_subtotal, axis=1)
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
@@ -1999,15 +2015,17 @@ if main_tab == "판매량 분석":
 
                 st.markdown("---")
 
-                st.markdown("## 📊 실적 분석")
-                monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix + "trend_")
-                half_year_stacked_section(df_long, unit_label=unit, key_prefix=prefix + "stack_")
-
-                st.markdown("---")
-
+                # ★수정됨: 계획대비 분석을 실적 분석 위로 이동
                 st.markdown("## 📏 계획대비 분석")
                 yearly_summary_section(df_long, unit_label=unit, key_prefix=prefix + "summary_")
                 plan_vs_actual_usage_section(df_long, unit_label=unit, key_prefix=prefix + "pv_")
+
+                st.markdown("---")
+
+                st.markdown("## 📊 실적 분석")
+                monthly_trend_section(df_long, unit_label=unit, key_prefix=prefix + "trend_")
+                half_year_stacked_section(df_long, unit_label=unit, key_prefix=prefix + "stack_")
+                # ★수정됨 끝
 
 
 # ─────────────────────────────────────────────────────────
@@ -2030,7 +2048,6 @@ elif main_tab == "공급량 분석(월)":
                     gsheet_df = pd.read_csv(GSHEET_URL)
                     gsheet_df.columns = gsheet_df.columns.str.strip()
 
-                    # 일자 파싱
                     date_col_g = None
                     for c in ["일자", "날짜", "date", "Date"]:
                         if c in gsheet_df.columns:
@@ -2043,13 +2060,11 @@ elif main_tab == "공급량 분석(월)":
                     gsheet_df["연"] = gsheet_df["일자"].dt.year
                     gsheet_df["월"] = gsheet_df["일자"].dt.month
 
-                    # 공급량(MJ) 컬럼 탐색
                     mj_col_g = None
                     for c in gsheet_df.columns:
                         if "mj" in c.lower() or "공급량" in c:
                             mj_col_g = c
                             break
-                    # 평균기온 컬럼 탐색
                     temp_col_g = None
                     for c in gsheet_df.columns:
                         if "기온" in c or "온도" in c or "temp" in c.lower():
@@ -2060,13 +2075,11 @@ elif main_tab == "공급량 분석(월)":
                         gsheet_df[mj_col_g] = pd.to_numeric(
                             gsheet_df[mj_col_g].astype(str).str.replace(",", ""), errors="coerce"
                         )
-                        # 월별 합산 (실적_공급량(MJ))
                         monthly_act = (
                             gsheet_df.groupby(["연", "월"], as_index=False)[mj_col_g]
                             .sum()
                             .rename(columns={mj_col_g: "실적_공급량(MJ)"})
                         )
-                        # 평균기온도 월 평균으로 합산
                         if temp_col_g:
                             gsheet_df[temp_col_g] = pd.to_numeric(
                                 gsheet_df[temp_col_g].astype(str).str.replace(",", ""), errors="coerce"
@@ -2078,12 +2091,10 @@ elif main_tab == "공급량 분석(월)":
                             )
                             monthly_act = pd.merge(monthly_act, monthly_temp, on=["연", "월"], how="left")
 
-                        # month_df의 실적_공급량(MJ) 컬럼을 구글 시트 값으로 교체
                         if "실적_공급량(MJ)" in month_df.columns:
                             month_df = month_df.drop(columns=["실적_공급량(MJ)"])
                         month_df = pd.merge(month_df, monthly_act[["연", "월", "실적_공급량(MJ)"]], on=["연", "월"], how="left")
 
-                        # day_df도 구글 시트 일별 데이터로 교체 (일별 분석 탭에서도 활용)
                         day_cols = {date_col_g: "일자"}
                         if mj_col_g and mj_col_g != "일자":
                             day_cols[mj_col_g] = "공급량(MJ)"
@@ -2146,7 +2157,6 @@ elif main_tab == "공급량 분석(일)":
         month_df = clean_supply_month_df(month_df)
         day_df = clean_supply_day_df(day_df)
 
-        # ── 구글 시트 일별 실적 덮어쓰기 ─────────────────────────
         GSHEET_URL_D = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
         use_gsheet_d = st.toggle("구글 시트에서 일별 실적 자동 가져오기", value=True, key="use_gsheet_d_toggle")
         if use_gsheet_d:
@@ -2156,7 +2166,6 @@ elif main_tab == "공급량 분석(일)":
                     gs_df = pd.read_csv(GSHEET_URL_D)
                     gs_df.columns = gs_df.columns.str.strip()
 
-                    # 일자 컬럼 탐색
                     date_col_d = None
                     for c in ["일자", "날짜", "date", "Date"]:
                         if c in gs_df.columns:
@@ -2167,13 +2176,11 @@ elif main_tab == "공급량 분석(일)":
                     gs_df["일자"] = pd.to_datetime(gs_df[date_col_d], errors="coerce")
                     gs_df = gs_df.dropna(subset=["일자"])
 
-                    # 공급량(MJ) 컬럼 탐색
                     mj_col_d = None
                     for c in gs_df.columns:
                         if "mj" in c.lower() or "공급량" in c:
                             mj_col_d = c
                             break
-                    # 평균기온 컬럼 탐색
                     temp_col_d = None
                     for c in gs_df.columns:
                         if "기온" in c or "온도" in c or "temp" in c.lower():
@@ -2189,7 +2196,6 @@ elif main_tab == "공급량 분석(일)":
                             gs_df[temp_col_d].astype(str).str.replace(",", ""), errors="coerce"
                         )
 
-                    # day_df 재구성
                     rename_map = {date_col_d: "일자"}
                     if mj_col_d and mj_col_d != date_col_d:
                         rename_map[mj_col_d] = "공급량(MJ)"
@@ -2199,7 +2205,6 @@ elif main_tab == "공급량 분석(일)":
                     gs_day = gs_df[keep_cols].rename(columns=rename_map)
                     day_df = clean_supply_day_df(gs_day)
 
-                    # month_df 실적도 월별 합산으로 교체
                     gs_df["연"] = gs_df["일자"].dt.year
                     gs_df["월"] = gs_df["일자"].dt.month
                     if mj_col_d:
@@ -2297,9 +2302,7 @@ elif main_tab == "분기별 판매량 보고서":
         df_csv = st.session_state['merged_csv_df'].copy()
         
     if not df_csv.empty:
-        # 컬럼명 공백 제거로 강건하게 처리
         df_csv.columns = df_csv.columns.str.strip()
-        # 대소문자 변형된 컬럼명 통일 (예: 사용량(MJ) → 사용량(mj))
         col_map = {}
         for col in df_csv.columns:
             col_clean = col.strip()
@@ -2323,13 +2326,11 @@ elif main_tab == "분기별 판매량 보고서":
             if idx == 0:
                 df_long_rpt = long_dict_rpt.get("열량", pd.DataFrame())
                 unit_str = "GJ"
-                # ★ 수정1: GJ탭 - 사용량(mj)을 /1000하여 val_작업 컬럼에 저장
                 csv_raw_col = "사용량(mj)"
                 key_sfx = "_gj"
             else:
                 df_long_rpt = long_dict_rpt.get("부피", pd.DataFrame())
                 unit_str = "천m³"
-                # ★ 수정1: 부피탭 - 사용량(m3)을 /1000하여 val_작업 컬럼에 저장
                 csv_raw_col = "사용량(m3)"
                 key_sfx = "_vol"
 
@@ -2352,19 +2353,13 @@ elif main_tab == "분기별 판매량 보고서":
                     if default_q_index < 0: default_q_index = 0
                     if default_q_index > 3: default_q_index = 3
 
-            # ★ 수정1: df_csv_tab 처리 - val_작업 컬럼에 단위 변환값 저장
             df_csv_tab = df_csv.copy()
             
             if not df_csv_tab.empty:
-                # GJ탭: 사용량(mj) / 1000 → val_작업
-                # 부피탭: 사용량(m3) / 1000 → val_작업
-                # 두 탭 모두 val_작업에 저장하여 df_long_rpt와 동일 단위로 맞춤
-                # csv_raw_col 매핑: 대소문자·공백 차이 허용
                 actual_col = None
                 if csv_raw_col in df_csv_tab.columns:
                     actual_col = csv_raw_col
                 else:
-                    # 컬럼명 대소문자 무시 탐색
                     for c in df_csv_tab.columns:
                         if c.strip().lower() == csv_raw_col.lower():
                             actual_col = c
@@ -2374,7 +2369,6 @@ elif main_tab == "분기별 판매량 보고서":
                 else:
                     df_csv_tab["val_작업"] = 0.0
 
-                # val_col은 항상 val_작업 사용
                 val_col = "val_작업"
                     
                 df_csv_tab["날짜_파싱"] = pd.NaT
@@ -2421,7 +2415,6 @@ elif main_tab == "분기별 판매량 보고서":
             
             st.markdown("<hr style='margin: 10px 0 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 2. At a Glance ---
             st.markdown("#### 💡 1. At a Glance")
             
             if not df_long_rpt.empty:
@@ -2452,7 +2445,6 @@ elif main_tab == "분기별 판매량 보고서":
             
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 3. 전체 판매량 표 정리 & One Page Review ---
             st.markdown("#### 📊 2. 전체 판매량 요약 및 주요 증감 원인 (One Page Review)")
             if not df_long_rpt.empty:
                 curr_plan = df_base[(df_base["연"] == sel_year_rpt) & (df_base["계획/실적"] == "계획")].groupby("그룹")["값"].sum()
@@ -2492,7 +2484,6 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 4, 5, 6. 용도별 판매량 분석 ---
             def render_usage_trend_report(usage_name, section_num, key_sfx, db_key):
                 
                 if df_long_rpt.empty:
@@ -2584,13 +2575,10 @@ elif main_tab == "분기별 판매량 보고서":
                             prev_ind_grp = df_sub_filtered[df_sub_filtered["연_csv"] == sel_year_rpt - 1].groupby(grp_col, as_index=False)[val_col].sum().rename(columns={val_col: f"{sel_year_rpt-1}년"})
                             
                             ind_comp = pd.merge(curr_ind_grp, prev_ind_grp, on=grp_col, how="outer").fillna(0)
-                            
                             ind_comp = ind_comp.sort_values(f"{sel_year_rpt}년", ascending=False).reset_index(drop=True)
                             
                             csv_total_curr = ind_comp[f"{sel_year_rpt}년"].sum()
                             csv_total_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
-                            # CSV 전체 합계 → 엑셀 실적 기준으로 스케일 보정 비율 계산
-                            # (CSV 단위와 df_long_rpt 단위가 완전히 일치하지 않을 수 있으므로)
                             scale_c = (sum_act / csv_total_curr) if csv_total_curr > 0 else 1.0
                             scale_p = (sum_prev / csv_total_prev) if csv_total_prev > 0 else 1.0
                             ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * scale_c
@@ -2635,7 +2623,6 @@ elif main_tab == "분기별 판매량 보고서":
 
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 
-            # --- 7, 8. 별첨 (업종별 비교표 & Top 30) ---
             st.markdown("#### 📎 6~7. 별첨 (업종별 상세 현황)")
             
             if df_csv_tab.empty or val_col not in df_csv_tab.columns:
@@ -2682,7 +2669,6 @@ elif main_tab == "분기별 판매량 보고서":
                         
                         csv_total_curr = ind_comp[f"{sel_year_rpt}년"].sum()
                         csv_total_prev = ind_comp[f"{sel_year_rpt-1}년"].sum()
-                        # CSV 합계를 엑셀 실적 기준으로 스케일 보정
                         scale_c = (tgt_c / csv_total_curr) if csv_total_curr > 0 else 1.0
                         scale_p = (tgt_p / csv_total_prev) if csv_total_prev > 0 else 1.0
                         ind_comp[f"{sel_year_rpt}년"] = ind_comp[f"{sel_year_rpt}년"] * scale_c
@@ -2703,8 +2689,6 @@ elif main_tab == "분기별 판매량 보고서":
                                 "대비(%)": o_rate
                             }])
                             ind_comp = pd.concat([top10_df, others_row], ignore_index=True)
-                        else:
-                            pass  # 10개 이하는 스케일 보정 이미 완료
                         
                         ind_comp["증감"] = ind_comp[f"{sel_year_rpt}년"] - ind_comp[f"{sel_year_rpt-1}년"]
                         ind_comp["대비(%)"] = np.where(ind_comp[f"{sel_year_rpt-1}년"] > 0, (ind_comp[f"{sel_year_rpt}년"] / ind_comp[f"{sel_year_rpt-1}년"]) * 100, 0)
@@ -2869,7 +2853,6 @@ elif main_tab == "분기별 판매량 보고서":
                             st.markdown("<br>", unsafe_allow_html=True)
                             
                             st.markdown(f"**🔍 {usage_label} 개별 고객 상세 차트**")
-                            # ★ 수정3: 고객 드롭다운을 grp_top_30이 아닌 grp_all_cust 전체에서 제공
                             all_customers = grp_all_cust["고객명"].tolist()
                             sel_cust = st.selectbox(f"상세 분석할 고객명을 선택하세요 ({usage_label})", ["선택 안함"] + all_customers, key=f"sel_cust_{usage_label}{key_sfx}")
 
@@ -2932,7 +2915,6 @@ elif main_tab == "분기별 판매량 보고서":
                 render_attachment_report("산업용", 6, key_sfx)
                 render_attachment_report("업무용", 7, key_sfx)
         
-        # --- 🖨️ PDF 인쇄 기능 ---
         st.markdown("<hr style='border-top: 2px solid #bbb; margin: 40px 0 20px 0;'>", unsafe_allow_html=True)
         st.markdown("### 🖨️ 보고서 출력")
         
