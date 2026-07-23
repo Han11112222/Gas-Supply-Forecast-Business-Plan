@@ -1945,7 +1945,7 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("**📡 일별 실적 구글 시트 연동**")
-        GSHEET_URL = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+        GSHEET_URL = https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0
         use_gsheet = st.toggle("구글 시트에서 실적 자동 가져오기", value=True, key="use_gsheet_toggle")
         if use_gsheet:
             st.caption("일별 공급량(MJ) + 평균기온을 월별 합산해 실적으로 사용합니다.")
@@ -2162,7 +2162,7 @@ elif main_tab == "공급량 분析(일)":
         month_df = clean_supply_month_df(month_df)
         day_df = clean_supply_day_df(day_df)
 
-        GSHEET_URL_D = "https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0"
+        GSHEET_URL_D = https://docs.google.com/spreadsheets/d/13HrIz6OytYDykXeXzXJ02I6XbaKin1YaKBoO2kBd6Bs/export?format=csv&gid=0
         use_gsheet_d = st.toggle("구글 시트에서 일별 실적 자동 가져오기", value=True, key="use_gsheet_d_toggle")
         if use_gsheet_d:
             st.caption("일별 공급량(MJ) + 평균기온을 구글 시트에서 불러옵니다.")
