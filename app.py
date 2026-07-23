@@ -248,9 +248,16 @@ def build_long_dict(sheets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
 
 
 # ─────────────────────────────────────────────────────────
-# ★ render_metric_card — 2번째 코드 스타일 (이모지 아이콘)
+# ★ 수정: render_metric_card — 컬러 사각형 아이콘 스타일
 # ─────────────────────────────────────────────────────────
-def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: str = "#1f77b4"):
+def render_metric_card(icon_color: str, title: str, main: str, sub: str = "", color: str = "#1f77b4"):
+    """
+    icon_color : 카드 좌상단 컬러 사각형 색상 (예: "#2563eb")
+    title      : 카드 제목 (예: "2026년 계획")
+    main       : 큰 숫자 텍스트
+    sub        : 작은 보조 텍스트
+    color      : main 숫자 색상
+    """
     html = f"""
     <div style="
         background-color:#ffffff;
@@ -262,7 +269,12 @@ def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: s
         flex-direction:column;
         justify-content:flex-start;
     ">
-        <div style="font-size:42px; line-height:1; margin-bottom:12px;">{icon}</div>
+        <div style="
+            width:44px; height:44px;
+            background-color:{icon_color};
+            border-radius:10px;
+            margin-bottom:14px;
+        "></div>
         <div style="font-size:17px; font-weight:600; color:#333; margin-bottom:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{title}</div>
         <div style="font-size:30px; font-weight:800; color:{color}; margin-bottom:8px; white-space:nowrap; letter-spacing:-0.5px;">{main}</div>
         <div style="font-size:13px; color:#555; min-height:18px; font-weight:400; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{sub}</div>
@@ -272,7 +284,7 @@ def render_metric_card(icon: str, title: str, main: str, sub: str = "", color: s
 
 
 # ─────────────────────────────────────────────────────────
-# ★ render_rate_donut — 2번째 코드 스타일 (파랑+회색, 크기 확대)
+# ★ 수정: render_rate_donut — 크기 확대 및 전년대비 회색 처리
 # ─────────────────────────────────────────────────────────
 def render_rate_donut(rate: float, color: str, title: str = ""):
     if pd.isna(rate) or np.isnan(rate):
@@ -779,10 +791,10 @@ if app_mode == "for summary":
     st.markdown("#### 3. 도시가스 보급률 현황")
     st.markdown("<span style='font-size:13px; color:#888; font-weight:500;'>&#91;2025.12 기준&#93;</span>", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
-    with col1: render_metric_card("📊", "전체 보급률", "96.8%", "", "#1f77b4")
-    with col2: render_metric_card("🏙️", "대구시",     "97.5%", "", "#2ca02c")
-    with col3: render_metric_card("🏘️", "경산시",     "101.3%", "", "#ff7f0e")
-    with col4: render_metric_card("⛰️", "고령군",     "38.0%", "", "#d62728")
+    with col1: render_metric_card("#1f77b4", "전체 보급률", "96.8%", "", "#1f77b4")
+    with col2: render_metric_card("#2ca02c", "대구시",     "97.5%", "", "#2ca02c")
+    with col3: render_metric_card("#ff7f0e", "경산시",     "101.3%", "", "#ff7f0e")
+    with col4: render_metric_card("#d62728", "고령군",     "38.0%", "", "#d62728")
 
     st.markdown("<br>", unsafe_allow_html=True)
     show_gu_rate = st.toggle("🔍 대구시내 구청별 보급률 상세 보기 (전체 96.8%)", key=f"toggle_gu_rate_{key_sfx}")
@@ -820,7 +832,7 @@ if app_mode == "for summary":
     st.stop()
 
 # ─────────────────────────────────────────────────────────
-# for Executive / for Sharing 모드 — At a Glance
+# for Executive / for Sharing 모드
 # ─────────────────────────────────────────────────────────
 st.markdown("#### 💡 1. At a Glance")
 
@@ -832,11 +844,11 @@ if not df_long_rpt.empty:
     achieve_rate_plan = (total_curr_act / total_curr_plan * 100) if total_curr_plan else 0
     achieve_rate_prev = (total_curr_act / total_prev_act * 100) if total_prev_act else 0
 
-    # ★ 수정: 2번째 코드 스타일 — 이모지 아이콘, {연도}년 타이틀, 파랑+회색 도넛
+    # ★ 수정: 컬러 사각형 아이콘 카드 + 도넛 크기 확대
     col_m1, col_m2, col_m3, col_d1, col_d2 = st.columns([1.1, 1.25, 1.25, 0.7, 0.7])
     with col_m1:
         render_metric_card(
-            "🎯",
+            "#2563eb",
             f"{sel_year_rpt}년 계획",
             f"{fmt_num_safe(total_curr_plan)} {unit_str}",
             "",
@@ -845,23 +857,23 @@ if not df_long_rpt.empty:
     with col_m2:
         sign_plan = "+" if total_curr_act - total_curr_plan > 0 else ""
         render_metric_card(
-            "🔥",
+            "#16a34a",
             f"{sel_year_rpt}년 실적",
             f"{fmt_num_safe(total_curr_act)} {unit_str}",
             f"차이: {sign_plan}{fmt_num_safe(total_curr_act - total_curr_plan)} {unit_str} ({achieve_rate_plan:.1f}%, 계획대비)",
-            "#2563eb"
+            "#16a34a"
         )
     with col_m3:
         sign_prev = "+" if total_curr_act - total_prev_act > 0 else ""
         render_metric_card(
-            "🔄",
+            "#f97316",
             f"{sel_year_rpt-1}년 실적",
             f"{fmt_num_safe(total_prev_act)} {unit_str}",
             f"차이: {sign_prev}{fmt_num_safe(total_curr_act - total_prev_act)} {unit_str} ({achieve_rate_prev:.1f}%, 전년대비)",
-            "#9ca3af"
+            "#f97316"
         )
     with col_d1:
-        render_rate_donut(achieve_rate_plan, "#2563eb", "계획대비 달성률")
+        render_rate_donut(achieve_rate_plan, "#16a34a", "계획대비 달성률")
     with col_d2:
         render_rate_donut(achieve_rate_prev, "#9ca3af", "전년대비 증감률")
 
@@ -911,7 +923,7 @@ st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
 # 용도별 판매량 분석
 def render_usage_trend_report(usage_name, section_num, key_sfx, db_key, m_suffix):
     if df_long_rpt.empty:
-        st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분析 : {usage_name}")
+        st.markdown(f"#### 📈 {section_num}. 용도별 판매량 분석 : {usage_name}")
         st.info("판매량 데이터가 없습니다.")
         return
 
